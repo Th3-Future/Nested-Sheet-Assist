@@ -1,0 +1,279 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+<meta HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<style type="text/css">
+html { overflow: auto; }
+body { background-color: #F0F0F0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; margin: 12px; color: #222; }
+.FieldLabel { font-weight: bold; color: #222; }
+.PathBox { background-color: #ffffff; border: 1px solid #ccc; padding: 5px 6px; font-size: 11px; color: #333; min-height: 18px; word-break: break-all; }
+.HelpText { color: #555; font-size: 11px; margin-bottom: 8px; }
+.ModeBox { background-color: #ffffff; border: 1px solid #ccc; border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
+.SheetItem { padding: 3px 2px; border-bottom: 1px solid #eee; font-size: 11px; }
+</style>
+<title>Nested Sheet Assist</title>
+<script type="text/javascript">
+function OnToggleActiveSheet() {
+  var chk = document.getElementById("UseActiveSheetCheck");
+  var btn = document.getElementById("ChooseTemplateFileButton");
+  var lbl = document.getElementById("TemplateFileNameLabel");
+  var row = document.getElementById("TemplateRow");
+  var visRow = document.getElementById("VisibleOnlyRow");
+  var visChk = document.getElementById("OnlyVisibleToolpathsCheck");
+
+  if (chk) {
+    var isChecked = chk.checked;
+    if (btn) btn.disabled = isChecked;
+    if (isChecked) {
+      if (btn) { btn.style.opacity = "0.4"; btn.style.cursor = "not-allowed"; }
+      if (lbl) lbl.style.color = "#888";
+      if (row) row.style.opacity = "0.5";
+      if (visRow) { visRow.style.opacity = "1.0"; }
+      if (visChk) { visChk.disabled = false; visChk.style.cursor = "pointer"; }
+    } else {
+      if (btn) { btn.style.opacity = "1.0"; btn.style.cursor = "pointer"; }
+      if (lbl) lbl.style.color = "#222";
+      if (row) row.style.opacity = "1.0";
+      if (visRow) { visRow.style.opacity = "0.35"; }
+      if (visChk) { visChk.disabled = true; visChk.style.cursor = "not-allowed"; }
+    }
+  }
+}
+
+function BuildSheetChecklist() {
+  var allData = document.getElementById("AllSheetsData");
+  var container = document.getElementById("SheetCheckboxesContainer");
+  if (!allData || !container) return;
+
+  var str = allData.value;
+  if (!str || str.length === 0) return;
+
+  var sheets = str.split("|");
+  container.innerHTML = "";
+
+  for (var i = 0; i < sheets.length; i++) {
+    var sName = sheets[i];
+    if (sName.length === 0) continue;
+
+    var div = document.createElement("div");
+    div.className = "SheetItem";
+
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.id = "chk_sheet_" + i;
+    cb.value = sName;
+    cb.checked = true;
+    cb.style.verticalAlign = "middle";
+    cb.style.marginRight = "6px";
+    cb.onclick = SyncSelectedSheets;
+
+    var lbl = document.createElement("label");
+    lbl.htmlFor = "chk_sheet_" + i;
+    lbl.style.verticalAlign = "middle";
+    lbl.style.cursor = "pointer";
+    lbl.innerText = sName;
+
+    div.appendChild(cb);
+    div.appendChild(lbl);
+    container.appendChild(div);
+  }
+  SyncSelectedSheets();
+}
+
+function SyncSelectedSheets() {
+  var container = document.getElementById("SheetCheckboxesContainer");
+  var selectedField = document.getElementById("SelectedSheetsData");
+  var summary = document.getElementById("SelectedSheetsSummary");
+  if (!container || !selectedField) return;
+
+  var inputs = container.getElementsByTagName("input");
+  var sel = [];
+  for (var i = 0; i < inputs.length; i++) {
+    if (inputs[i].checked) {
+      sel.push(inputs[i].value);
+    }
+  }
+  var isAll = (sel.length === inputs.length);
+  if (isAll) {
+    selectedField.value = "ALL";
+  } else if (sel.length === 0) {
+    selectedField.value = "NONE";
+  } else {
+    selectedField.value = sel.join("|");
+  }
+
+  if (summary) {
+    if (isAll) {
+      summary.innerHTML = "Included Sheets: <b>All sheets selected (" + sel.length + ")</b>";
+    } else if (sel.length === 0) {
+      summary.innerHTML = "Included Sheets: <span style='color:red;'>None selected</span>";
+    } else {
+      summary.innerHTML = "Included Sheets: <b>" + sel.length + " of " + inputs.length + " selected</b> (" + sel.join(", ") + ")";
+    }
+  }
+}
+
+function SetAllSheets(state) {
+  var container = document.getElementById("SheetCheckboxesContainer");
+  if (!container) return;
+  var inputs = container.getElementsByTagName("input");
+  for (var i = 0; i < inputs.length; i++) {
+    inputs[i].checked = state;
+  }
+  SyncSelectedSheets();
+}
+
+function ToggleSheetDrawer() {
+  var drawer = document.getElementById("SheetSelectionDrawer");
+  if (!drawer) return;
+  if (drawer.style.display === "none" || drawer.style.display === "") {
+    drawer.style.display = "block";
+  } else {
+    drawer.style.display = "none";
+  }
+  SyncSelectedSheets();
+}
+
+window.onload = function() {
+  setTimeout(function() {
+    OnToggleActiveSheet();
+    BuildSheetChecklist();
+  }, 100);
+};
+
+window.onfocus = function() {
+  SyncSelectedSheets();
+};
+</script>
+</head>
+<body bgcolor="#efefef">
+
+<!-- Hidden fields for sheet list communication -->
+<input type="text" id="AllSheetsData" name="AllSheetsData" style="display:none;" />
+<input type="text" id="SelectedSheetsData" name="SelectedSheetsData" style="display:none;" />
+
+<table border="0" align="center" bgcolor="#efefef" cellspacing="0" width="100%">
+  <tr>
+    <td style="padding-bottom: 4px;">
+      <h2 style="margin:0; color: #1b365d; font-size: 16px;">Nested Sheet Assist</h2>
+      <p class="HelpText">
+        Apply toolpaths across all nested sheets, export ATC-compatible NC files per sheet, and generate combined Job Setup Sheets in PDF format.
+      </p>
+      <hr style="border:0; border-top: 1px solid #ccc;">
+    </td>
+  </tr>
+</table>
+
+<!-- Source Selection Mode Box -->
+<div class="ModeBox">
+  <div style="line-height: 22px;">
+    <input type="checkbox" CLASS="LuaButton" id="UseActiveSheetCheck" name="UseActiveSheetCheck" onclick="OnToggleActiveSheet();" style="vertical-align: middle; margin: 0 4px 0 0;" />
+    <span style="font-weight: bold; font-size: 12px; color: #1b365d; vertical-align: middle;">Use Active Sheet's Toolpaths</span>
+    <span style="font-size: 11px; color: #666; margin-left: 6px; vertical-align: middle;">(Copies toolpaths from active sheet across all sheets)</span>
+  </div>
+  <div id="VisibleOnlyRow" style="margin-left: 20px; margin-top: 4px; line-height: 20px;">
+    <input type="checkbox" CLASS="LuaButton" id="OnlyVisibleToolpathsCheck" name="OnlyVisibleToolpathsCheck" style="vertical-align: middle; margin: 0 4px 0 0;" />
+    <span style="font-size: 11px; color: #333; font-weight: bold; vertical-align: middle;">Only copy visible (checked) toolpaths</span>
+    <span style="font-size: 11px; color: #777; margin-left: 6px; vertical-align: middle;">(Uncheck to copy all toolpaths on active sheet)</span>
+  </div>
+</div>
+
+<table width="100%" border="0" cellpadding="4" cellspacing="0">
+  <tr id="TemplateRow">
+    <td width="20%" class="FieldLabel" id="TemplateLabelCell">Template File:</td>
+    <td width="60%">
+      <div class="PathBox"><span id="TemplateFileNameLabel">(No template selected)</span></div>
+    </td>
+    <td width="20%">
+      <input type="button" CLASS="LuaButton" id="ChooseTemplateFileButton" name="ChooseTemplateFileButton" value="Select Template..." style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 28px; cursor: pointer;" />
+    </td>
+  </tr>
+  <tr>
+    <td class="FieldLabel">Post Processor:</td>
+    <td>
+      <select id="PostNameSelector" style="width: 100%; height: 26px; font-size: 12px;"></select>
+    </td>
+    <td></td>
+  </tr>
+  <tr>
+    <td class="FieldLabel">Output Folder:</td>
+    <td>
+      <input type="text" id="PostOutputFolderEdit" name="PostOutputFolderEdit" style="width: 100%; height: 24px;" />
+    </td>
+    <td>
+      <input type="button" CLASS="DirectoryPicker" id="ChooseDirButton" name="ChooseDirButton" value="Browse Folder..." style="height:28px; width:100%; font-weight:bold; cursor:pointer;" />
+    </td>
+  </tr>
+</table>
+
+<!-- Job Setup Sheet Section -->
+<div class="ModeBox" style="margin-top: 8px;">
+  <table width="100%" border="0" cellpadding="2" cellspacing="0">
+    <tr>
+      <td width="54%">
+        <div style="font-weight: bold; font-size: 12px; color: #1b365d;">Job Setup Report (PDF)</div>
+        <div id="SelectedSheetsSummary" style="font-size: 11px; color: #555; margin-top: 3px;">
+          Included Sheets: All sheets selected
+        </div>
+      </td>
+      <td width="22%" style="padding-right: 4px;">
+        <input type="button" id="SelectSheetsModalBtn" value="Select Sheets..." onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; border: 1px solid #777; background: #fff; border-radius: 3px;" />
+      </td>
+      <td width="24%">
+        <input type="button" CLASS="LuaButton" id="ExportJobReportButton" name="ExportJobReportButton" value="Export Job Report (PDF)" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; background-color: #1976d2; color: white; border: 1px solid #0d47a1; border-radius: 3px;" />
+      </td>
+    </tr>
+  </table>
+
+  <!-- Inline Sheet Selection Drawer -->
+  <div id="SheetSelectionDrawer" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc;">
+    <div style="margin-bottom: 6px; font-size: 11px;">
+      <span style="font-weight: bold; color: #1b365d;">Check sheets to export:</span>
+      <span style="float: right;">
+        <span onclick="SetAllSheets(true);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Select All</span> &nbsp;|&nbsp;
+        <span onclick="SetAllSheets(false);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Deselect All</span>
+      </span>
+      <div style="clear: both;"></div>
+    </div>
+    <div id="SheetCheckboxesContainer" style="max-height: 140px; overflow-y: auto; border: 1px solid #ccc; padding: 4px 6px; background: #fafafa; border-radius: 3px; margin-bottom: 6px;">
+      <!-- Populated dynamically -->
+    </div>
+    <div align="right">
+      <input type="button" value="Done" onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 70px; height: 24px; cursor: pointer; background-color: #1b365d; color: white; border: 1px solid #0f2442; border-radius: 3px; font-size: 11px;" />
+    </div>
+  </div>
+</div>
+
+<hr style="border:0; border-top: 1px solid #ccc; margin: 10px 0;">
+
+<table width="100%" border="0" cellpadding="4" cellspacing="0">
+  <tr>
+    <td width="33%">
+      <input type="button" CLASS="LuaButton" id="ApplyOnlyButton" name="ApplyOnlyButton" value="1. Apply to All Sheets" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#f5f5f5; border:1px solid #888; color:#111;" />
+    </td>
+    <td width="33%">
+      <input type="button" CLASS="LuaButton" id="SaveOnlyButton" name="SaveOnlyButton" value="2. Save Toolpaths (ATC)" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#e8f4fd; border:1px solid #2b78e4; color:#0b4a99;" />
+    </td>
+    <td width="34%">
+      <input type="button" CLASS="LuaButton" id="ApplyAndSaveButton" name="ApplyAndSaveButton" value="3. Apply & Save All" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#2b78e4; border:1px solid #1a56a4; color:white;" />
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3" align="center" style="padding-top: 8px; padding-bottom: 4px;">
+      <input class="FormButton" type="button" id="ButtonCancel" name="ButtonCancel" value="Close" onclick="window.close();" style="width: 120px; height: 30px; cursor: pointer;" />
+    </td>
+  </tr>
+</table>
+
+<div style="margin-top: 6px;">
+  <div style="font-weight:bold; font-size:11px; color:#444; margin-bottom: 3px;">Activity & Status Log:</div>
+  <textarea id="StatusLogLabel" name="StatusLogLabel" readonly style="background-color: #ffffff; color: #222222; font-family: Consolas, 'Courier New', monospace; font-size: 11px; padding: 6px; border: 1px solid #bbb; border-radius: 3px; width: 100%; height: 125px; box-sizing: border-box; resize: none; overflow-y: scroll; line-height: 1.4;">Ready. Select a template, apply toolpaths, or export Job Report PDF.</textarea>
+</div>
+
+<div align="right" style="color: #999; font-size: 10px; margin-top: 6px;">
+  Nested Sheet Assist &bull; Version <span id="GadgetVersion">1.0</span>
+</div>
+
+</body>
+</html>

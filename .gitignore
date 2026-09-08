@@ -1,0 +1,12 @@
+# Temporary files generated during export
+*.tmp
+*.temp
+*temp*.html
+*temp*.pdf
+*.bat
+*.log
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store
