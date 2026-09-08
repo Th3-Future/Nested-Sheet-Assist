@@ -90,5 +90,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Author & Acknowledgements
 
-- **Lead Developer**: **Godswill** ([@Th3-Future](https://github.com/Th3-Future))
+- **Lead Developer**: **Godswill Ezeorah** ([@Th3-Future](https://github.com/Th3-Future))
 - **AI Pair Programming & Architecture Assistance**: Developed with the assistance of **Antigravity** (Google DeepMind).
