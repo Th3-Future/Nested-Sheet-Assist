@@ -1045,54 +1045,88 @@ local function SetLayerRGB(layer, r_255, g_255, b_255)
    pcall(function() layer.Colour = rgb_int end)
 end
 
--- Measures continuous straight wall length leaving corner in step direction (-1: incoming backwards, +1: outgoing forwards)
-local function GetStraightWallLength(spans, n, start_k, step)
-   local total_len = 0.0
-   local accum_dx = 0.0
-   local accum_dy = 0.0
-   local wall_tx = nil
-   local wall_ty = nil
+-- Measures continuous straight wall length leaving corner v0 in step direction (-1: incoming backwards, +1: outgoing forwards)
+local function GetStraightWallLength(spans, n, v0, start_k, step)
+   local path_len = 0.0
    local k = start_k
 
    for step_count = 1, n do
       local s = spans[k]
-      local dx = s.EndPoint2D.x - s.StartPoint2D.x
-      local dy = s.EndPoint2D.y - s.StartPoint2D.y
+      local seg_start = (step < 0) and s.EndPoint2D or s.StartPoint2D
+      local seg_end   = (step < 0) and s.StartPoint2D or s.EndPoint2D
+
+      local dx = seg_end.x - seg_start.x
+      local dy = seg_end.y - seg_start.y
       local slen = math.sqrt(dx * dx + dy * dy)
 
-      local v_dx = (step < 0) and -dx or dx
-      local v_dy = (step < 0) and -dy or dy
+      if slen > 0.00001 then
+         local disp_x = seg_end.x - v0.x
+         local disp_y = seg_end.y - v0.y
+         local disp_len = math.sqrt(disp_x * disp_x + disp_y * disp_y)
 
-      if slen > 0.0001 then
-         local tx = v_dx / slen
-         local ty = v_dy / slen
-
-         if wall_tx == nil then
-            wall_tx = tx
-            wall_ty = ty
-         else
-            local dot = tx * wall_tx + ty * wall_ty
-            -- If direction deviates by more than ~35 degrees, we have reached an internal or external corner
-            if dot < 0.80 then
+         if disp_len > 0.02 then
+            local tx_w = disp_x / disp_len
+            local ty_w = disp_y / disp_len
+            local tx_s = dx / slen
+            local ty_s = dy / slen
+            local dot = tx_w * tx_s + ty_w * ty_s
+            -- When angle deviates by more than ~45 degrees, the straight wall has ended!
+            if dot < 0.70 then
                break
             end
          end
 
-         total_len = total_len + slen
-         accum_dx = accum_dx + v_dx
-         accum_dy = accum_dy + v_dy
-
-         local accum_dist = math.sqrt(accum_dx * accum_dx + accum_dy * accum_dy)
-         if accum_dist > 0.001 then
-            wall_tx = accum_dx / accum_dist
-            wall_ty = accum_dy / accum_dist
-         end
+         path_len = path_len + slen
       end
 
       k = (step < 0) and (((k - 2 + n) % n) + 1) or ((k % n) + 1)
    end
 
-   return total_len
+   return path_len
+end
+
+-- Computes clean, noise-free incoming and outgoing tangents over a small chord window (e.g. 0.05 inches)
+local function GetCornerTangents(spans, n, corner_k, window)
+   local v = spans[corner_k].EndPoint2D
+   window = window or 0.05
+
+   -- Incoming tangent: walk backwards from v by window distance
+   local p_back = v
+   local k = corner_k
+   for step_count = 1, n do
+      local s = spans[k]
+      local dx = s.StartPoint2D.x - v.x
+      local dy = s.StartPoint2D.y - v.y
+      local d = math.sqrt(dx * dx + dy * dy)
+      p_back = s.StartPoint2D
+      if d >= window then break end
+      k = ((k - 2 + n) % n) + 1
+   end
+   local dx_in = v.x - p_back.x
+   local dy_in = v.y - p_back.y
+   local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+   if len_in < 0.0001 then len_in = 0.0001 end
+   local t_in = { x = dx_in / len_in, y = dy_in / len_in }
+
+   -- Outgoing tangent: walk forwards from v by window distance
+   local p_fwd = v
+   k = (corner_k % n) + 1
+   for step_count = 1, n do
+      local s = spans[k]
+      local dx = s.EndPoint2D.x - v.x
+      local dy = s.EndPoint2D.y - v.y
+      local d = math.sqrt(dx * dx + dy * dy)
+      p_fwd = s.EndPoint2D
+      if d >= window then break end
+      k = (k % n) + 1
+   end
+   local dx_out = p_fwd.x - v.x
+   local dy_out = p_fwd.y - v.y
+   local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+   if len_out < 0.0001 then len_out = 0.0001 end
+   local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+
+   return t_in, t_out
 end
 
 -- Walks backwards from corner k along incoming edge by cut_dist, strictly interpolating along span geometry
@@ -1324,7 +1358,7 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
       return contour:Clone(), 0, {}
    end
 
-   -- Pass 1: Identify sharp corners strictly matching offset-detected internal corners
+   -- Pass 1: Identify sharp corners matching offset-detected internal corners
    local corner_info_map = {}
    local total_corners_filleted = 0
 
@@ -1332,62 +1366,27 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
       local best_k = nil
       local best_dist_sq = (radius * 1.6) * (radius * 1.6)
       for i = 1, n do
-         local s_in = spans[i]
-         local next_i = (i % n) + 1
-         local s_out = spans[next_i]
-         local v = s_in.EndPoint2D
-
-         local dx_in = v.x - s_in.StartPoint2D.x
-         local dy_in = v.y - s_in.StartPoint2D.y
-         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
-         local dx_out = s_out.EndPoint2D.x - v.x
-         local dy_out = s_out.EndPoint2D.y - v.y
-         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
-
-         if len_in > 0.0001 and len_out > 0.0001 then
-            local t_in = { x = dx_in / len_in, y = dy_in / len_in }
-            local t_out = { x = dx_out / len_out, y = dy_out / len_out }
-            local dot = t_in.x * t_out.x + t_in.y * t_out.y
-
-            -- Must be a real sharp turn (not a flat edge or collinear subdivision)
-            if math.abs(dot) < 0.85 then
-               local dsq_corner = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
-               local dsq_centre = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
-               local dsq = math.min(dsq_corner, dsq_centre)
-               if dsq < best_dist_sq then
-                  best_dist_sq = dsq
-                  best_k = i
-               end
-            end
+         local v = spans[i].EndPoint2D
+         local dsq_corner = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
+         local dsq_centre = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+         local dsq = math.min(dsq_corner, dsq_centre)
+         if dsq < best_dist_sq then
+            best_dist_sq = dsq
+            best_k = i
          end
       end
 
       if best_k ~= nil and corner_info_map[best_k] == nil then
-         local s_in = spans[best_k]
+         local v = spans[best_k].EndPoint2D
          local next_k = (best_k % n) + 1
-         local s_out = spans[next_k]
-         local v = s_in.EndPoint2D
-
-         local dx_in = v.x - s_in.StartPoint2D.x
-         local dy_in = v.y - s_in.StartPoint2D.y
-         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
-         if len_in < 0.0001 then len_in = 0.0001 end
-         local t_in = { x = dx_in / len_in, y = dy_in / len_in }
-
-         local dx_out = s_out.EndPoint2D.x - v.x
-         local dy_out = s_out.EndPoint2D.y - v.y
-         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
-         if len_out < 0.0001 then len_out = 0.0001 end
-         local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+         local t_in, t_out = GetCornerTangents(spans, n, best_k, 0.05)
 
          corner_info_map[best_k] = {
             k = best_k,
             next_k = next_k,
             vertex = v,
             t_in = t_in,
-            t_out = t_out,
-            len_in = len_in,
-            len_out = len_out
+            t_out = t_out
          }
          total_corners_filleted = total_corners_filleted + 1
       end
@@ -1432,9 +1431,9 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
 
       if fillet_type == 1 then
          -- T-Bone Fillet
-         -- Measure true straight wall length leaving corner (stops at any internal OR external corner)
-         local len_in_straight = GetStraightWallLength(spans, n, k, -1)
-         local len_out_straight = GetStraightWallLength(spans, n, next_k, 1)
+         -- Measure true straight wall length leaving corner (displacement-based, stops at any corner)
+         local len_in_straight = GetStraightWallLength(spans, n, v, k, -1)
+         local len_out_straight = GetStraightWallLength(spans, n, v, next_k, 1)
 
          local place_on = 'in'
          if tbone_dir == 2 then
