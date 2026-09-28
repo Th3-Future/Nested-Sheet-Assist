@@ -1021,20 +1021,89 @@ function OnLuaButton_ApplyAndSaveButton(dialog)
    return true
 end
 
-local function SetLayerRGB(layer, r, g, b)
+local function SetLayerRGB(layer, r_255, g_255, b_255)
    if layer == nil then return end
-   local ok = pcall(function() layer:SetColor(r, g, b) end)
+   local r_norm = r_255 / 255.0
+   local g_norm = g_255 / 255.0
+   local b_norm = b_255 / 255.0
+   local ok = pcall(function() layer:SetColor(r_norm, g_norm, b_norm) end)
    if ok then return end
-   ok = pcall(function() layer:SetColor(r / 255.0, g / 255.0, b / 255.0) end)
+   ok = pcall(function() layer:SetColour(r_norm, g_norm, b_norm) end)
    if ok then return end
-   ok = pcall(function() layer:SetColour(r, g, b) end)
+   ok = pcall(function() layer:SetColor(r_255, g_255, b_255) end)
    if ok then return end
-   ok = pcall(function() layer:SetColour(r / 255.0, g / 255.0, b / 255.0) end)
-   if ok then return end
-   local rgb_int = r + (g * 256) + (b * 65536)
+   local rgb_int = r_255 + (g_255 * 256) + (b_255 * 65536)
    ok = pcall(function() layer.Color = rgb_int end)
    if ok then return end
    pcall(function() layer.Colour = rgb_int end)
+end
+
+-- Calculates total continuous collinear length along contour in direction step (-1 or +1)
+local function GetContinuousEdgeLength(spans, n, start_k, step, tangent)
+   local total_len = 0
+   local k = start_k
+   for step_count = 1, n do
+      local s = spans[k]
+      local dx = s.EndPoint2D.x - s.StartPoint2D.x
+      local dy = s.EndPoint2D.y - s.StartPoint2D.y
+      local len = math.sqrt(dx * dx + dy * dy)
+      if len > 0.00001 then
+         local tx = dx / len
+         local ty = dy / len
+         local dot = tx * tangent.x + ty * tangent.y
+         if dot > 0.95 then
+            total_len = total_len + len
+         else
+            break
+         end
+      end
+      k = (step < 0) and (((k - 2 + n) % n) + 1) or ((k % n) + 1)
+   end
+   return total_len
+end
+
+-- Walks backwards from corner k along incoming edge by cut_dist, absorbing micro-segments
+local function TrimIncomingEdge(spans, n, corner_k, cut_dist, t_in)
+   local rem = cut_dist
+   local k = corner_k
+   local skipped = {}
+   for step_count = 1, n do
+      local s = spans[k]
+      local dx = s.EndPoint2D.x - s.StartPoint2D.x
+      local dy = s.EndPoint2D.y - s.StartPoint2D.y
+      local slen = math.sqrt(dx * dx + dy * dy)
+      if slen >= rem - 0.0001 then
+         local p_cut = Point2D(s.EndPoint2D.x - rem * t_in.x, s.EndPoint2D.y - rem * t_in.y)
+         return k, p_cut, skipped
+      else
+         skipped[k] = true
+         rem = rem - slen
+         k = ((k - 2 + n) % n) + 1
+      end
+   end
+   return corner_k, Point2D(spans[corner_k].EndPoint2D.x - cut_dist * t_in.x, spans[corner_k].EndPoint2D.y - cut_dist * t_in.y), skipped
+end
+
+-- Walks forward from corner next_k along outgoing edge by cut_dist, absorbing micro-segments
+local function TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
+   local rem = cut_dist
+   local k = next_k
+   local skipped = {}
+   for step_count = 1, n do
+      local s = spans[k]
+      local dx = s.EndPoint2D.x - s.StartPoint2D.x
+      local dy = s.EndPoint2D.y - s.StartPoint2D.y
+      local slen = math.sqrt(dx * dx + dy * dy)
+      if slen >= rem - 0.0001 then
+         local p_cut = Point2D(s.StartPoint2D.x + rem * t_out.x, s.StartPoint2D.y + rem * t_out.y)
+         return k, p_cut, skipped
+      else
+         skipped[k] = true
+         rem = rem - slen
+         k = (k % n) + 1
+      end
+   end
+   return next_k, Point2D(spans[next_k].StartPoint2D.x + cut_dist * t_out.x, spans[next_k].StartPoint2D.y + cut_dist * t_out.y), skipped
 end
 
 local function ClearLayerObjects(layer)
@@ -1299,6 +1368,7 @@ function FilletSingleContour(contour, radius, fillet_type)
 
    -- Pass 3: Calculate fillet geometry and trim endpoints A and B
    local fillet_arcs = {}
+   local skipped_spans = {}
 
    for k, cinfo in pairs(corner_info_map) do
       local v = cinfo.vertex
@@ -1307,30 +1377,17 @@ function FilletSingleContour(contour, radius, fillet_type)
       local next_k = cinfo.next_k
 
       if fillet_type == 1 then
-         -- T-Bone Fillet: place on longer span to keep mating edge flat
-         local place_on = (cinfo.len_in >= cinfo.len_out) and 'in' or 'out'
+         -- T-Bone Fillet: evaluate continuous collinear length to place on longer wall
+         local cont_len_in = GetContinuousEdgeLength(spans, n, k, -1, t_in)
+         local cont_len_out = GetContinuousEdgeLength(spans, n, next_k, 1, t_out)
+         local place_on = (cont_len_in >= cont_len_out) and 'in' or 'out'
          local cut_dist = 2.0 * radius
 
          if place_on == 'in' then
-            if cut_dist > cinfo.len_in * 0.9 and cinfo.len_out > cinfo.len_in then
-               place_on = 'out'
-            else
-               cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
-            end
-         elseif place_on == 'out' then
-            if cut_dist > cinfo.len_out * 0.9 and cinfo.len_in > cinfo.len_out then
-               place_on = 'in'
-               cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
-            else
-               cut_dist = math.min(cut_dist, cinfo.len_out * 0.9)
-            end
-         end
+            local trim_k, p_cut, skipped = TrimIncomingEdge(spans, n, k, cut_dist, t_in)
+            B[trim_k] = p_cut
+            for sk in pairs(skipped) do skipped_spans[sk] = true end
 
-         if place_on == 'in' then
-            local p_cut = Point2D(v.x - cut_dist * t_in.x, v.y - cut_dist * t_in.y)
-            B[k] = p_cut
-            -- Chord travels in direction t_in (from p_cut to v)
-            -- Fillet pocket extends the adjoining wall in direction -t_out
             local chord_dir = t_in
             local target_pocket_dir = { x = -t_out.x, y = -t_out.y }
             local n_left_x = -chord_dir.y
@@ -1343,10 +1400,10 @@ function FilletSingleContour(contour, radius, fillet_type)
                bulge = bulge
             }
          else
-            local p_cut = Point2D(v.x + cut_dist * t_out.x, v.y + cut_dist * t_out.y)
-            A[next_k] = p_cut
-            -- Chord travels in direction t_out (from v to p_cut)
-            -- Fillet pocket extends the incoming wall in direction +t_in
+            local trim_k, p_cut, skipped = TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
+            A[trim_k] = p_cut
+            for sk in pairs(skipped) do skipped_spans[sk] = true end
+
             local chord_dir = t_out
             local target_pocket_dir = { x = t_in.x, y = t_in.y }
             local n_left_x = -chord_dir.y
@@ -1360,15 +1417,14 @@ function FilletSingleContour(contour, radius, fillet_type)
             }
          end
       else
-         -- Dog-Bone Fillet: 45 degree extension into corner
+         -- Dog-Bone Fillet: 45 degree extension into corner (around the marker circle)
          local d = radius
-         if d > cinfo.len_in * 0.45 then d = cinfo.len_in * 0.45 end
-         if d > cinfo.len_out * 0.45 then d = cinfo.len_out * 0.45 end
-
-         local p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y)
-         local p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y)
-         B[k] = p_in
-         A[next_k] = p_out
+         local trim_in_k, p_in, skipped_in = TrimIncomingEdge(spans, n, k, d, t_in)
+         local trim_out_k, p_out, skipped_out = TrimOutgoingEdge(spans, n, next_k, d, t_out)
+         B[trim_in_k] = p_in
+         A[trim_out_k] = p_out
+         for sk in pairs(skipped_in) do skipped_spans[sk] = true end
+         for sk in pairs(skipped_out) do skipped_spans[sk] = true end
 
          -- Chord from p_in to p_out
          local chord_dx = p_out.x - p_in.x
@@ -1390,34 +1446,36 @@ function FilletSingleContour(contour, radius, fillet_type)
       end
    end
 
-   -- Pass 4: Assemble new contour with 100% span preservation using native LineTo / ArcTo
+   -- Pass 4: Assemble new contour with 100% span preservation and micro-segment absorption
    local new_contour = Contour(0.0)
 
    for k = 1, n do
-      local s = spans[k]
-      local a_pt = A[k]
-      local b_pt = B[k]
+      if not skipped_spans[k] then
+         local s = spans[k]
+         local a_pt = A[k]
+         local b_pt = B[k]
 
-      if new_contour.IsEmpty then
-         new_contour:AppendPoint(a_pt)
-      else
-         local cur_end = new_contour.EndPoint2D
-         local gap_sq = (cur_end.x - a_pt.x)^2 + (cur_end.y - a_pt.y)^2
-         if gap_sq > 0.000001 then
-            new_contour:LineTo(a_pt)
+         if new_contour.IsEmpty then
+            new_contour:AppendPoint(a_pt)
+         else
+            local cur_end = new_contour.EndPoint2D
+            local gap_sq = (cur_end.x - a_pt.x)^2 + (cur_end.y - a_pt.y)^2
+            if gap_sq > 0.000001 then
+               new_contour:LineTo(a_pt)
+            end
          end
-      end
 
-      local a_moved = (a_pt.x - s.StartPoint2D.x)^2 + (a_pt.y - s.StartPoint2D.y)^2 > 0.000001
-      local b_moved = (b_pt.x - s.EndPoint2D.x)^2 + (b_pt.y - s.EndPoint2D.y)^2 > 0.000001
+         local a_moved = (a_pt.x - s.StartPoint2D.x)^2 + (a_pt.y - s.StartPoint2D.y)^2 > 0.000001
+         local b_moved = (b_pt.x - s.EndPoint2D.x)^2 + (b_pt.y - s.EndPoint2D.y)^2 > 0.000001
 
-      if a_moved or b_moved or s.IsLineType then
-         new_contour:LineTo(b_pt)
-      elseif s.IsArcType then
-         local arc_sp = CastSpanToArcSpan(s)
-         new_contour:ArcTo(b_pt, arc_sp.Bulge)
-      else
-         new_contour:AppendSpan(CloneSpanGeometry(s))
+         if a_moved or b_moved or s.IsLineType then
+            new_contour:LineTo(b_pt)
+         elseif s.IsArcType then
+            local arc_sp = CastSpanToArcSpan(s)
+            new_contour:ArcTo(b_pt, arc_sp.Bulge)
+         else
+            new_contour:AppendSpan(CloneSpanGeometry(s))
+         end
       end
 
       -- If corner k has a fillet arc, append it
@@ -1666,7 +1724,7 @@ function OnLuaButton_ApplyFilletButton(dialog)
             else
                local out_layer = job.LayerManager:GetLayerWithName(g_options.filletOutputLayer)
                out_layer.Visible = true
-               SetLayerRGB(out_layer, 220, 20, 60) -- Distinct Crimson/Red for FilletedContours
+               SetLayerRGB(out_layer, 0, 0, 0) -- Standard Black for FilletedContours
                local add_ok = out_layer:AddObject(new_cad, true)
                WriteDebugLog('Item ' .. idx .. ': added to ' .. out_layer.Name .. ' add=' .. tostring(add_ok) .. ', layer.Count=' .. tostring(out_layer.Count))
             end
@@ -1794,7 +1852,7 @@ function OnLuaButton_CreateFilletMarkersButton(dialog)
 
    local marker_layer_obj = job.LayerManager:GetLayerWithName(marker_layer)
    marker_layer_obj.Visible = true
-   SetLayerRGB(marker_layer_obj, 0, 160, 255) -- Distinct Blue/Cyan for preview markers
+   SetLayerRGB(marker_layer_obj, 128, 128, 128) -- Distinct Gray for preview markers
    if marker_layer_obj ~= nil and not marker_layer_obj.IsEmpty then
       local removed = ClearLayerObjects(marker_layer_obj)
       WriteDebugLog('Cleared ' .. removed .. ' existing preview markers from \'' .. marker_layer .. '\'')
