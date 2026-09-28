@@ -382,8 +382,21 @@ window.onfocus = function() {
           Apply directly to object's original layer (replace original vectors, like built-in tool)
         </label>
         <div id="FilletOutputLayerRow" style="margin-top: 6px; font-size: 11px; color: #555; display: none;">
-          If unchecked, place filleted copies on layer: 
-          <input type="text" id="FilletOutputLayerEdit" name="FilletOutputLayerEdit" style="width: 150px; height: 22px; margin-left: 4px;" />
+          <div style="margin-bottom: 5px;">
+            If unchecked, place filleted copies on layer: 
+            <input type="text" id="FilletOutputLayerEdit" name="FilletOutputLayerEdit" style="width: 140px; height: 22px; margin-left: 4px;" />
+          </div>
+          <div>
+            <span style="font-weight: bold; color: #333; margin-right: 6px;">Layer Action:</span>
+            <label style="cursor: pointer; margin-right: 12px;">
+              <input type="radio" name="FilletLayerModeRadio" id="FilletLayerModeRadio_1" value="1" style="vertical-align: middle; margin-right: 3px;" />
+              <b>Replace Layer</b> <span style="color:#777;">(Clear layer before creating)</span>
+            </label>
+            <label style="cursor: pointer;">
+              <input type="radio" name="FilletLayerModeRadio" id="FilletLayerModeRadio_2" value="2" style="vertical-align: middle; margin-right: 3px;" />
+              <b>Append</b> <span style="color:#777;">(Keep existing vectors on layer)</span>
+            </label>
+          </div>
         </div>
       </td>
     </tr>

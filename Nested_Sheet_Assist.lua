@@ -33,7 +33,8 @@ g_options = {
    filletAllowance         = 0.0,
    filletReplaceOriginal   = true,
    filletOutputLayer       = "FilletedContours",
-   filletScope             = 1  -- 1 = Selected Vectors, 2 = All on Active Sheet, 3 = All Sheets
+   filletScope             = 1, -- 1 = Selected Vectors, 2 = All on Active Sheet, 3 = All Sheets
+   filletLayerMode         = 1  -- 1 = Replace layer contents, 2 = Append to layer
 }
 
 g_log_buffer = ""
@@ -105,6 +106,7 @@ function SaveDefaults(options, job)
       registry:SetBool("filletReplaceOriginal", options.filletReplaceOriginal)
       registry:SetString("filletOutputLayer", options.filletOutputLayer)
       registry:SetInt("filletScope", options.filletScope)
+      registry:SetInt("filletLayerMode", options.filletLayerMode)
    end)
 
    local proj_key = GetProjectKey(job)
@@ -132,6 +134,7 @@ function LoadDefaults(options, job)
       options.filletReplaceOriginal = registry:GetBool("filletReplaceOriginal", true)
       options.filletOutputLayer     = registry:GetString("filletOutputLayer", options.filletOutputLayer)
       options.filletScope           = registry:GetInt("filletScope", options.filletScope)
+      options.filletLayerMode       = registry:GetInt("filletLayerMode", 1)
    end)
 
    local proj_key = GetProjectKey(job)
@@ -226,6 +229,10 @@ function UpdateOptionsFromDialog(dialog, options)
       local s_idx = dialog:GetRadioIndex("FilletScopeRadio")
       if s_idx >= 1 and s_idx <= 3 then options.filletScope = s_idx end
    end)
+   pcall(function()
+      local m_idx = dialog:GetRadioIndex("FilletLayerModeRadio")
+      if m_idx == 1 or m_idx == 2 then options.filletLayerMode = m_idx end
+   end)
    return true
 end
 
@@ -271,6 +278,8 @@ function OnLuaButton_FilletScopeRadio_1(dialog) return true end
 function OnLuaButton_FilletScopeRadio_2(dialog) return true end
 function OnLuaButton_FilletScopeRadio_3(dialog) return true end
 function OnLuaButton_FilletReplaceOriginalCheck(dialog) return true end
+function OnLuaButton_FilletLayerModeRadio_1(dialog) return true end
+function OnLuaButton_FilletLayerModeRadio_2(dialog) return true end
 
 function IsToolpathOnSheet(tp, s_id, s_idx, s_name, num_sheets)
    if tp == nil then return false end
@@ -1012,6 +1021,23 @@ function OnLuaButton_ApplyAndSaveButton(dialog)
    return true
 end
 
+local function ClearLayerObjects(layer)
+   if layer == nil or layer.IsEmpty then return 0 end
+   local to_remove = {}
+   local pos = layer:GetHeadPosition()
+   while pos ~= nil do
+      local obj = nil
+      obj, pos = layer:GetNext(pos)
+      if obj ~= nil then
+         table.insert(to_remove, obj)
+      end
+   end
+   for _, obj in ipairs(to_remove) do
+      layer:RemoveObject(obj)
+   end
+   return #to_remove
+end
+
 --[[  ==========================================================================
 |
 | AUTO FILLET ENGINE (T-BONE / DOG-BONE)
@@ -1537,6 +1563,18 @@ function OnLuaButton_ApplyFilletButton(dialog)
       LogMsg(dialog, 'Placement   : New Layer \'' .. g_options.filletOutputLayer .. '\'')
    end
 
+   local layer_mode = g_options.filletLayerMode or 1
+   if not replace_orig and layer_mode == 1 then
+      local out_layer = job.LayerManager:FindLayerWithName(g_options.filletOutputLayer)
+      if out_layer ~= nil and not out_layer.IsEmpty then
+         local removed = ClearLayerObjects(out_layer)
+         LogMsg(dialog, 'Layer Action: Replace (cleared ' .. removed .. ' existing vector(s) on \'' .. g_options.filletOutputLayer .. '\')')
+         WriteDebugLog('Cleared ' .. removed .. ' existing objects on layer \'' .. g_options.filletOutputLayer .. '\'')
+      end
+   elseif not replace_orig then
+      LogMsg(dialog, 'Layer Action: Append (keeping existing vectors on \'' .. g_options.filletOutputLayer .. '\')')
+   end
+
    local total_filleted_parts = 0
    local total_corners_all = 0
 
@@ -1691,6 +1729,12 @@ function OnLuaButton_CreateFilletMarkersButton(dialog)
       return true
    end
 
+   local marker_layer_obj = job.LayerManager:FindLayerWithName(marker_layer)
+   if marker_layer_obj ~= nil and not marker_layer_obj.IsEmpty then
+      local removed = ClearLayerObjects(marker_layer_obj)
+      WriteDebugLog('Cleared ' .. removed .. ' existing preview markers from \'' .. marker_layer .. '\'')
+   end
+
    local marker_group = ContourGroup(true)
    local total_corners = 0
 
@@ -1765,6 +1809,7 @@ function DisplayDialog(script_path, job)
    dialog:AddTextField("FilletOutputLayerEdit", g_options.filletOutputLayer)
    dialog:AddRadioGroup("FilletTypeRadio", g_options.filletType)
    dialog:AddRadioGroup("FilletScopeRadio", g_options.filletScope)
+   dialog:AddRadioGroup("FilletLayerModeRadio", g_options.filletLayerMode)
 
    PopulatePostDropDownList(dialog, "PostNameSelector", g_options.postName)
 
