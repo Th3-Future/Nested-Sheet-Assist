@@ -180,10 +180,19 @@ function ToggleSheetDrawer() {
   SyncSelectedSheets();
 }
 
+function OnToggleReplaceOriginal() {
+  var chk = document.getElementById("FilletReplaceOriginalCheck");
+  var row = document.getElementById("FilletOutputLayerRow");
+  if (chk && row) {
+    row.style.display = chk.checked ? "none" : "block";
+  }
+}
+
 window.onload = function() {
   setTimeout(function() {
     OnToggleActiveSheet();
     BuildSheetChecklist();
+    OnToggleReplaceOriginal();
   }, 100);
 };
 
@@ -366,12 +375,16 @@ window.onfocus = function() {
       </td>
     </tr>
     <tr>
-      <td class="FieldLabel">Output Layer Name:</td>
-      <td>
-        <input type="text" id="FilletOutputLayerEdit" name="FilletOutputLayerEdit" style="width: 180px; height: 24px;" />
-      </td>
-      <td style="font-size: 11px; color: #666;">
-        (New layer for filleted vectors)
+      <td class="FieldLabel">Layer Handling:</td>
+      <td colspan="2">
+        <label style="cursor: pointer; font-weight: bold; color: #1b365d;">
+          <input type="checkbox" id="FilletReplaceOriginalCheck" name="FilletReplaceOriginalCheck" checked onclick="OnToggleReplaceOriginal();" style="vertical-align: middle; margin-right: 6px;" />
+          Apply directly to object's original layer (replace original vectors, like built-in tool)
+        </label>
+        <div id="FilletOutputLayerRow" style="margin-top: 6px; font-size: 11px; color: #555; display: none;">
+          If unchecked, place filleted copies on layer: 
+          <input type="text" id="FilletOutputLayerEdit" name="FilletOutputLayerEdit" style="width: 150px; height: 22px; margin-left: 4px;" />
+        </div>
       </td>
     </tr>
     <tr>

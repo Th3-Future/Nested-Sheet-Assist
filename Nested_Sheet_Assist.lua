@@ -1,4 +1,4 @@
-﻿-- VECTRIC LUA SCRIPT
+-- VECTRIC LUA SCRIPT
 -- Nested Sheet Assist
 -- Complete Toolpath Synchronization, ATC Export & Job Setup Sheet PDF Generator
 
@@ -28,11 +28,12 @@ g_options = {
    useActiveSheet       = false,
    onlyVisibleToolpaths = true,
    -- Fillet options
-   filletToolDiam       = 0.25,
-   filletType           = 1, -- 1 = T-Bone, 2 = Dog-Bone
-   filletAllowance      = 0.0,
-   filletOutputLayer    = "FilletedContours",
-   filletScope          = 1  -- 1 = Selected Vectors, 2 = All on Active Sheet, 3 = All Sheets
+   filletToolDiam          = 0.25,
+   filletType              = 1, -- 1 = T-Bone, 2 = Dog-Bone
+   filletAllowance         = 0.0,
+   filletReplaceOriginal   = true,
+   filletOutputLayer       = "FilletedContours",
+   filletScope             = 1  -- 1 = Selected Vectors, 2 = All on Active Sheet, 3 = All Sheets
 }
 
 g_log_buffer = ""
@@ -101,6 +102,7 @@ function SaveDefaults(options, job)
       registry:SetDouble("filletToolDiam", options.filletToolDiam)
       registry:SetInt("filletType", options.filletType)
       registry:SetDouble("filletAllowance", options.filletAllowance)
+      registry:SetBool("filletReplaceOriginal", options.filletReplaceOriginal)
       registry:SetString("filletOutputLayer", options.filletOutputLayer)
       registry:SetInt("filletScope", options.filletScope)
    end)
@@ -125,10 +127,11 @@ function LoadDefaults(options, job)
    pcall(function()
       local diam = registry:GetDouble("filletToolDiam", options.filletToolDiam)
       if diam > 0 then options.filletToolDiam = diam end
-      options.filletType        = registry:GetInt("filletType", options.filletType)
-      options.filletAllowance   = registry:GetDouble("filletAllowance", options.filletAllowance)
-      options.filletOutputLayer = registry:GetString("filletOutputLayer", options.filletOutputLayer)
-      options.filletScope       = registry:GetInt("filletScope", options.filletScope)
+      options.filletType            = registry:GetInt("filletType", options.filletType)
+      options.filletAllowance       = registry:GetDouble("filletAllowance", options.filletAllowance)
+      options.filletReplaceOriginal = registry:GetBool("filletReplaceOriginal", true)
+      options.filletOutputLayer     = registry:GetString("filletOutputLayer", options.filletOutputLayer)
+      options.filletScope           = registry:GetInt("filletScope", options.filletScope)
    end)
 
    local proj_key = GetProjectKey(job)
@@ -207,6 +210,9 @@ function UpdateOptionsFromDialog(dialog, options)
    end)
    pcall(function()
       options.filletAllowance = dialog:GetDoubleField("FilletAllowanceEdit")
+   end)
+   pcall(function()
+      options.filletReplaceOriginal = dialog:GetCheckBox("FilletReplaceOriginalCheck")
    end)
    pcall(function()
       local layer = dialog:GetTextField("FilletOutputLayerEdit")
@@ -1002,229 +1008,277 @@ end
 --[[  ==========================================================================
 |
 | AUTO FILLET ENGINE (T-BONE / DOG-BONE)
+| Directly applies fillets in-place to the object's layer (like built-in tool)
 |
 ========================================================================== ]]
 
-function UtAngleRad2d(x1, y1, x2, y2, x3, y3)
-   local x = (x1 - x2) * (x3 - x2) + (y1 - y2) * (y3 - y2)
-   local y = (x1 - x2) * (y3 - y2) - (y1 - y2) * (x3 - x2)
-   if (x == 0.0 and y == 0.0) then
-      return 0.0
-   end
-   local val = math.atan2(y, x)
-   if val < 0.0 then
-      val = val + 2.0 * math.pi
-   end
-   return val
+local function GetTurnInfo(t_in, t_out)
+   local cross = t_in.x * t_out.y - t_in.y * t_out.x
+   local dot = t_in.x * t_out.x + t_in.y * t_out.y
+   local angle = math.atan2(math.abs(cross), dot)
+   return cross, dot, angle
 end
 
-function GetInternalAngleArc(arc_span, arc_centre)
-   local start_pt = arc_span.StartPoint2D
-   local end_pt   = arc_span.EndPoint2D
-   local arc_angle
-   if arc_span.IsClockwise then
-      arc_angle = UtAngleRad2d(end_pt.x, end_pt.y, arc_centre.x, arc_centre.y, start_pt.x, start_pt.y)
+local function IsInternalCorner(is_ccw, cross, dot, angle)
+   if is_ccw then
+      if cross < -0.3 and math.abs(dot) < 0.65 then
+         return true
+      end
    else
-      arc_angle = UtAngleRad2d(start_pt.x, start_pt.y, arc_centre.x, arc_centre.y, end_pt.x, end_pt.y)
-   end
-   return arc_angle
-end
-
-function GetEndPointArcBisector(arc_span, radius, start_point, mid_point)
-   local internal_angle = GetInternalAngleArc(arc_span, start_point)
-   local corner_angle = math.pi - internal_angle 
-   local sin_val = math.sin(0.5 * corner_angle)
-   if math.abs(sin_val) < 0.0001 then
-      return start_point
-   end
-   local offset_distance = (radius / sin_val) - radius
-   local offset_vector = mid_point - start_point
-   offset_vector:Normalize()
-   return start_point + offset_distance * offset_vector
-end
-
-function SpanIsArc(span, radius)
-   if not span.IsArcType then
-      return false
-   end
-   local centre = Point3D()
-   local arc_span = CastSpanToArcSpan(span)
-   local span_radius = arc_span:RadiusAndCentre(centre)
-   if math.abs(span_radius - radius) > 0.01 then
-      return false
-   end
-   return true
-end
-
-function MakeLineContour(start_pt, end_pt)
-   local c = Contour(0.0)
-   c:AppendPoint(start_pt)
-   c:LineTo(end_pt)
-   return c
-end
-
-function CloneSpanGeometry(span)
-   if span.IsLineType then
-      return LineSpan(span.StartPoint2D, span.EndPoint2D)
-   elseif span.IsArcType then
-      local arc_span = CastSpanToArcSpan(span)
-      return ArcSpan(span.StartPoint2D, span.EndPoint2D, arc_span.Bulge)
-   elseif span.IsBezierType then
-      local bspan = CastSpanToBezierSpan(span)
-      return BezierSpan(bspan.StartPoint2D, 
-                        bspan.EndPoint2D, 
-                        span:GetControlPointPosition(0), 
-                        span:GetControlPointPosition(1))
-   end
-   return nil
-end
-
-function AddTBoneSpan(contour, prev_span, next_span, offset_distance)
-   if prev_span == nil or next_span == nil then return end
-
-   local start_point = prev_span.StartPoint2D
-   local centre_point = next_span.StartPoint2D
-   local end_point = next_span.EndPoint2D
-
-   local angle = UtAngleRad2d(start_point.x, start_point.y, centre_point.x, centre_point.y, end_point.x, end_point.y)
-   local tan_val = math.tan(angle / 2)
-   if math.abs(tan_val) < 0.0001 then return end
-
-   local prev_is_longer = prev_span:GetLength(0.01) > next_span:GetLength(0.01)
-   local ext_distance = offset_distance / tan_val
-
-   local extension_point = nil
-   if prev_is_longer then
-      extension_point = centre_point + ext_distance * -next_span:EndVector(true)
-   else
-      extension_point = centre_point + ext_distance * prev_span:EndVector(true)
-   end
-
-   contour:LineTo(extension_point)
-   contour:LineTo(centre_point)
-end
-
--- Spatial Bin Hash Grid
-function BinKey(point, bin_data)
-   local i = math.floor((point.x - bin_data.min_x) / bin_data.grid_x)
-   local j = math.floor((point.y - bin_data.min_y) / bin_data.grid_y)
-   if i < 0 or j < 0 or (i + 1 > bin_data.dim) or (j + 1 > bin_data.dim) then
-      return nil, nil
-   end
-   return i + 1, j + 1
-end
-
-function InitializeBins(dim)
-   local mt = {}
-   for i = 1, dim do
-      mt[i] = {}
-      for j = 1, dim do
-         mt[i][j] = {}
+      if cross > 0.3 and math.abs(dot) < 0.65 then
+         return true
       end
    end
-   return mt
+   return false
 end
 
-function FillBinsWithMarkers(markers, bin_data, bin_array)
-   for i = 1, #markers do
-      local m = markers[i]
-      if m.Count == 1 and m:GetFirstSpan().IsLineType then
-         local bx, by = BinKey(m.StartPoint2D, bin_data)
-         if bx ~= nil then
-            table.insert(bin_array[bx][by], m)
-         end
+function FilletSingleContour(contour, radius, fillet_type)
+   if contour == nil or not contour.IsClosed then
+      return contour and contour:Clone() or nil, 0, nil
+   end
+
+   local spans = {}
+   local pos = contour:GetHeadPosition()
+   while pos ~= nil do
+      local sp = nil
+      sp, pos = contour:GetNext(pos)
+      if sp ~= nil then
+         table.insert(spans, sp)
       end
    end
-end
 
-function FindMatchingMarker(point, bin_data, bin_array)
-   local i, j = BinKey(point, bin_data)
-   if i == nil then return nil end
-   local bucket = bin_array[i][j]
-   if bucket == nil then return nil end
-
-   for m = 1, #bucket do
-      local marker = bucket[m]
-      if marker.StartPoint2D:IsCoincident(point, 0.01) then
-         return marker
-      end
+   local n = #spans
+   if n < 3 then
+      return contour:Clone(), 0, nil
    end
-   return nil
-end
 
-function ComputeCornerMarkers(contour_group, radius, do_ccw)
-   local circles = {}
-   local line_markers = {}
-   local ctr_pos = contour_group:GetHeadPosition()
-   local contour
-   while ctr_pos ~= nil do
-      contour, ctr_pos = contour_group:GetNext(ctr_pos)
-      if contour.IsCCW == do_ccw then
-         local span
-         local span_pos = contour:GetHeadPosition()
-         local prev_span = contour:GetLastSpan()
-         while span_pos ~= nil do
-            span, span_pos = contour:GetNext(span_pos)
-            if SpanIsArc(span, radius) then
-               local centre = Point3D()
-               local arc_span = CastSpanToArcSpan(span)
-               arc_span:RadiusAndCentre(centre)
-               table.insert(circles, centre)
-               local span_out_end = GetEndPointArcBisector(arc_span, radius, centre, arc_span:ArcMidPoint())
-               table.insert(line_markers, MakeLineContour(centre, span_out_end))
+   local is_ccw = contour.IsCCW
+   local bulge_sign = is_ccw and -1.0 or 1.0
+
+   local corners = {}
+   local total_corners_filleted = 0
+
+   for i = 1, n do
+      local s_in = spans[i]
+      local next_idx = (i % n) + 1
+      local s_out = spans[next_idx]
+
+      local v = s_in.EndPoint2D
+
+      local dx_in = v.x - s_in.StartPoint2D.x
+      local dy_in = v.y - s_in.StartPoint2D.y
+      local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+      if len_in < 0.0001 then len_in = 0.0001 end
+      local t_in = { x = dx_in / len_in, y = dy_in / len_in }
+
+      local dx_out = s_out.EndPoint2D.x - v.x
+      local dy_out = s_out.EndPoint2D.y - v.y
+      local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+      if len_out < 0.0001 then len_out = 0.0001 end
+      local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+
+      local cross, dot, angle = GetTurnInfo(t_in, t_out)
+
+      local filleted = false
+      local corner_info = { filleted = false, vertex = v }
+
+      if IsInternalCorner(is_ccw, cross, dot, angle) then
+         if fillet_type == 1 then
+            -- T-Bone Fillet: place on longer span
+            local can_in = (len_in >= 2.0 * radius)
+            local can_out = (len_out >= 2.0 * radius)
+            local place_on = nil
+
+            if can_in and can_out then
+               if len_in >= len_out then place_on = 'in' else place_on = 'out' end
+            elseif can_in then
+               place_on = 'in'
+            elseif can_out then
+               place_on = 'out'
             end
-            prev_span = span
-         end
-      end
-   end
-   return circles, line_markers
-end
 
-function AddFilletsToContour(contour, radius, bin_array, bin_data, is_ccw, do_tbones)
-   if contour.IsCCW ~= is_ccw then
-      return nil
-   end
-
-   local return_contour = Contour(0.0)
-   local span_pos = contour:GetHeadPosition()
-   local span
-   local prev_span = nil
-   if contour.IsClosed then
-      prev_span = contour:GetLastSpan()
-   end
-
-   while span_pos ~= nil do
-      span, span_pos = contour:GetNext(span_pos)
-      local marker_line = FindMatchingMarker(span.StartPoint2D, bin_data, bin_array)
-      if marker_line ~= nil then
-         if return_contour.IsEmpty then
-            return_contour:AppendPoint(contour.StartPoint2D)
-         end
-         if do_tbones and prev_span then
-            AddTBoneSpan(return_contour, prev_span, span, radius)
+            if place_on == 'in' then
+               filleted = true
+               corner_info = {
+                  filleted = true,
+                  type = 'tbone',
+                  place_on = 'in',
+                  p_cut = Point2D(v.x - 2.0 * radius * t_in.x, v.y - 2.0 * radius * t_in.y),
+                  vertex = v,
+                  bulge = bulge_sign * 1.0
+               }
+            elseif place_on == 'out' then
+               filleted = true
+               corner_info = {
+                  filleted = true,
+                  type = 'tbone',
+                  place_on = 'out',
+                  vertex = v,
+                  p_cut = Point2D(v.x + 2.0 * radius * t_out.x, v.y + 2.0 * radius * t_out.y),
+                  bulge = bulge_sign * 1.0
+               }
+            end
          else
-            return_contour:LineTo(marker_line.EndPoint2D)
-            return_contour:LineTo(marker_line.StartPoint2D)
+            -- Dog-Bone Fillet: 45 degree extension
+            local d = 1.41421356 * radius
+            if len_in >= d and len_out >= d then
+               filleted = true
+               corner_info = {
+                  filleted = true,
+                  type = 'dogbone',
+                  p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y),
+                  p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y),
+                  vertex = v,
+                  bulge = bulge_sign * 1.0
+               }
+            end
          end
       end
 
-      local cloned = CloneSpanGeometry(span)
-      if cloned ~= nil then
-         return_contour:AppendSpan(cloned)
+      if filleted then
+         total_corners_filleted = total_corners_filleted + 1
       end
-      prev_span = span
+      corners[i] = corner_info
    end
 
-   return return_contour
+   if total_corners_filleted == 0 then
+      return contour:Clone(), 0, corners
+   end
+
+   local new_contour = Contour(0.0)
+
+   for k = 1, n do
+      local prev_corner_idx = ((k - 2 + n) % n) + 1
+      local prev_c = corners[prev_corner_idx]
+      local cur_c = corners[k]
+
+      local s = spans[k]
+      local start_pt = s.StartPoint2D
+      if prev_c.filleted then
+         if prev_c.type == 'dogbone' then
+            start_pt = prev_c.p_out
+         elseif prev_c.type == 'tbone' then
+            if prev_c.place_on == 'out' then
+               start_pt = prev_c.p_cut
+            else
+               start_pt = prev_c.vertex
+            end
+         end
+      end
+
+      local end_pt = s.EndPoint2D
+      if cur_c.filleted then
+         if cur_c.type == 'dogbone' then
+            end_pt = cur_c.p_in
+         elseif cur_c.type == 'tbone' then
+            if cur_c.place_on == 'in' then
+               end_pt = cur_c.p_cut
+            else
+               end_pt = cur_c.vertex
+            end
+         end
+      end
+
+      local s_dx = s.EndPoint2D.x - s.StartPoint2D.x
+      local s_dy = s.EndPoint2D.y - s.StartPoint2D.y
+      local s_len = math.sqrt(s_dx * s_dx + s_dy * s_dy)
+      if s_len < 0.0001 then s_len = 0.0001 end
+      local t_dir = { x = s_dx / s_len, y = s_dy / s_len }
+
+      local seg_dx = end_pt.x - start_pt.x
+      local seg_dy = end_pt.y - start_pt.y
+      local seg_proj = seg_dx * t_dir.x + seg_dy * t_dir.y
+
+      if seg_proj > 0.001 then
+         if new_contour.IsEmpty then
+            new_contour:AppendPoint(start_pt)
+         end
+         new_contour:AppendSpan(LineSpan(start_pt, end_pt))
+      end
+
+      if cur_c.filleted then
+         if cur_c.type == 'dogbone' then
+            if new_contour.IsEmpty then
+               new_contour:AppendPoint(cur_c.p_in)
+            end
+            new_contour:AppendSpan(ArcSpan(cur_c.p_in, cur_c.p_out, cur_c.bulge))
+         elseif cur_c.type == 'tbone' then
+            if cur_c.place_on == 'in' then
+               if new_contour.IsEmpty then
+                  new_contour:AppendPoint(cur_c.p_cut)
+               end
+               new_contour:AppendSpan(ArcSpan(cur_c.p_cut, cur_c.vertex, cur_c.bulge))
+            else
+               if new_contour.IsEmpty then
+                  new_contour:AppendPoint(cur_c.vertex)
+               end
+               new_contour:AppendSpan(ArcSpan(cur_c.vertex, cur_c.p_cut, cur_c.bulge))
+            end
+         end
+      end
+   end
+
+   return new_contour, total_corners_filleted, corners
 end
 
-function GetVectorsForFilletScope(job, scope, sheet_index)
-   local contours = ContourGroup(true)
+function FindLayerForObject(job, cad_obj)
+   if job == nil or cad_obj == nil then return nil end
+   local layer_mgr = job.LayerManager
+   local layer_pos = layer_mgr:GetHeadPosition()
+   while layer_pos ~= nil do
+      local layer = nil
+      layer, layer_pos = layer_mgr:GetNext(layer_pos)
+      if layer ~= nil and not layer.IsSystemLayer then
+         local obj_pos = layer:GetHeadPosition()
+         while obj_pos ~= nil do
+            local obj = nil
+            obj, obj_pos = layer:GetNext(obj_pos)
+            if obj == cad_obj then
+               return layer
+            end
+         end
+      end
+   end
+
+   -- Geometric fallback
+   local target_ctr = cad_obj:GetContour()
+   if target_ctr ~= nil then
+      local bb_target = target_ctr.BoundingBox2D
+      layer_pos = layer_mgr:GetHeadPosition()
+      while layer_pos ~= nil do
+         local layer = nil
+         layer, layer_pos = layer_mgr:GetNext(layer_pos)
+         if layer ~= nil and not layer.IsSystemLayer then
+            local obj_pos = layer:GetHeadPosition()
+            while obj_pos ~= nil do
+               local obj = nil
+               obj, obj_pos = layer:GetNext(obj_pos)
+               if obj ~= nil then
+                  local c = obj:GetContour()
+                  if c ~= nil and c.Count == target_ctr.Count then
+                     local bb = c.BoundingBox2D
+                     if math.abs(bb.MinX - bb_target.MinX) < 0.001 and
+                        math.abs(bb.MinY - bb_target.MinY) < 0.001 and
+                        math.abs(bb.MaxX - bb_target.MaxX) < 0.001 and
+                        math.abs(bb.MaxY - bb_target.MaxY) < 0.001 then
+                        return layer
+                     end
+                  end
+               end
+            end
+         end
+      end
+   end
+   return layer_mgr:GetActiveLayer()
+end
+
+function GetTargetObjectsForFillet(job, scope, sheet_index)
+   local targets = {}
 
    if scope == 1 then
-      -- Selected vectors on current sheet
+      -- Selected vectors on active sheet
       if job.Selection.IsEmpty then
-         return nil, "No vectors selected. Please select vectors on the active sheet."
+         return nil, 'No vectors selected. Please select vectors on the active sheet.'
       end
       local pos = job.Selection:GetHeadPosition()
       while pos ~= nil do
@@ -1233,7 +1287,13 @@ function GetVectorsForFilletScope(job, scope, sheet_index)
          if cad_obj ~= nil then
             local ctr = cad_obj:GetContour()
             if ctr ~= nil and ctr.IsClosed then
-               contours:AddTail(ctr:Clone())
+               local parent_layer = FindLayerForObject(job, cad_obj)
+               table.insert(targets, {
+                  cad_obj = cad_obj,
+                  layer = parent_layer,
+                  contour = ctr,
+                  sheet_index = cad_obj.SheetIndex
+               })
             end
          end
       end
@@ -1257,7 +1317,12 @@ function GetVectorsForFilletScope(job, scope, sheet_index)
                   if matches_sheet then
                      local ctr = obj:GetContour()
                      if ctr ~= nil and ctr.IsClosed then
-                        contours:AddTail(ctr:Clone())
+                        table.insert(targets, {
+                           cad_obj = obj,
+                           layer = layer,
+                           contour = ctr,
+                           sheet_index = obj.SheetIndex
+                        })
                      end
                   end
                end
@@ -1266,73 +1331,10 @@ function GetVectorsForFilletScope(job, scope, sheet_index)
       end
    end
 
-   if contours.Count == 0 then
-      return nil, "No closed vector contours found to fillet."
+   if #targets == 0 then
+      return nil, 'No closed vector contours found to fillet.'
    end
-   return contours, nil
-end
-
-function ProcessFilletContourGroup(contour_group, radius, do_tbones)
-   -- Offset out then in to create rounded corner arcs
-   local out_cw = contour_group:Offset(radius, radius, 1, true)
-   local rounded_cw = out_cw:Offset(-radius, -radius, 1, true)
-
-   local out_ccw = contour_group:Offset(radius, radius, 1, true)
-   local rounded_ccw = out_ccw:Offset(-radius, -radius, 1, true)
-
-   local ccw_circles, ccw_markers = ComputeCornerMarkers(rounded_ccw, radius, true)
-   local cw_circles, cw_markers = ComputeCornerMarkers(rounded_cw, radius, false)
-
-   local total_corners = #ccw_markers + #cw_markers
-   if total_corners == 0 then
-      return nil, total_corners, "No internal sharp corners found for tool diameter " .. tostring(radius * 2)
-   end
-
-   local all_markers = {}
-   for _, m in ipairs(ccw_markers) do table.insert(all_markers, m) end
-   for _, m in ipairs(cw_markers) do table.insert(all_markers, m) end
-
-   local bb = contour_group.BoundingBox2D
-   local x_len = bb.XLength
-   local y_len = bb.YLength
-   local min_x = bb.MinX - 0.1 * x_len
-   local max_x = bb.MaxX + 0.1 * x_len
-   local min_y = bb.MinY - 0.1 * y_len
-   local max_y = bb.MaxY + 0.1 * y_len
-
-   local bin_data = {}
-   bin_data.min_x = min_x
-   bin_data.min_y = min_y
-   bin_data.dim = math.max(1, math.ceil(math.sqrt(#all_markers)))
-   bin_data.grid_x = math.max(0.001, (max_x - min_x) / bin_data.dim)
-   bin_data.grid_y = math.max(0.001, (max_y - min_y) / bin_data.dim)
-
-   local bin_array = InitializeBins(bin_data.dim)
-   FillBinsWithMarkers(all_markers, bin_data, bin_array)
-
-   local filleted_group = ContourGroup(true)
-
-   local pos = rounded_ccw:GetHeadPosition()
-   while pos ~= nil do
-      local c = nil
-      c, pos = rounded_ccw:GetNext(pos)
-      local filleted = AddFilletsToContour(c, radius, bin_array, bin_data, true, do_tbones)
-      if filleted ~= nil then
-         filleted_group:AddTail(filleted)
-      end
-   end
-
-   pos = rounded_cw:GetHeadPosition()
-   while pos ~= nil do
-      local c = nil
-      c, pos = rounded_cw:GetNext(pos)
-      local filleted = AddFilletsToContour(c, radius, bin_array, bin_data, false, do_tbones)
-      if filleted ~= nil then
-         filleted_group:AddTail(filleted)
-      end
-   end
-
-   return filleted_group, total_corners, nil
+   return targets, nil
 end
 
 function AddContourGroupToLayer(job, group, layer_name)
@@ -1355,8 +1357,8 @@ end
 function OnLuaButton_ApplyFilletButton(dialog)
    local job = VectricJob()
    if not job.Exists then
-      LogMsg(dialog, "âŒ Error: No active job found.")
-      MessageBox("No active job found.")
+      LogMsg(dialog, 'Error: No active job found.')
+      MessageBox('No active job found.')
       return true
    end
 
@@ -1365,30 +1367,67 @@ function OnLuaButton_ApplyFilletButton(dialog)
 
    local tool_diam = g_options.filletToolDiam
    if tool_diam <= 0 then
-      LogMsg(dialog, "âŒ Error: Tool Diameter must be positive.")
-      MessageBox("Tool Diameter must be positive.")
+      LogMsg(dialog, 'Error: Tool Diameter must be positive.')
+      MessageBox('Tool Diameter must be positive.')
       return true
    end
 
    local radius = (0.5 * tool_diam) + g_options.filletAllowance
-   local do_tbones = (g_options.filletType == 1)
-   local fillet_desc = do_tbones and "T-Bone Fillet" or "Dog-Bone Fillet"
-   local out_layer = g_options.filletOutputLayer
-   if out_layer == "" then out_layer = "FilletedContours" end
+   local fillet_type = g_options.filletType
+   local fillet_desc = (fillet_type == 1) and 'T-Bone Fillet' or 'Dog-Bone Fillet'
+   local replace_orig = g_options.filletReplaceOriginal
 
-   LogMsg(dialog, "=== Auto Corner Filleting ===")
-   LogMsg(dialog, "Fillet Type : " .. fillet_desc)
-   LogMsg(dialog, "Tool Diam   : " .. string.format("%.4f", tool_diam) .. " (Radius: " .. string.format("%.4f", radius) .. ")")
-   LogMsg(dialog, "Output Layer: " .. out_layer)
+   LogMsg(dialog, '=== Auto Corner Filleting ===')
+   LogMsg(dialog, 'Fillet Type : ' .. fillet_desc)
+   LogMsg(dialog, 'Tool Diam   : ' .. string.format('%.4f', tool_diam) .. ' (Radius: ' .. string.format('%.4f', radius) .. ')')
+   if replace_orig then
+      LogMsg(dialog, 'Placement   : In-Place on Object Layer (Replaces original vectors)')
+   else
+      LogMsg(dialog, 'Placement   : New Layer \'' .. g_options.filletOutputLayer .. '\'')
+   end
 
    local total_filleted_parts = 0
    local total_corners_all = 0
+
+   local function ProcessTargets(target_list)
+      local sheet_corners = 0
+      local sheet_parts = 0
+      local new_selected = {}
+
+      for _, item in ipairs(target_list) do
+         local filleted_ctr, corners = FilletSingleContour(item.contour, radius, fillet_type)
+         if corners > 0 and filleted_ctr ~= nil then
+            sheet_corners = sheet_corners + corners
+            sheet_parts = sheet_parts + 1
+
+            local new_cad = CreateCadContour(filleted_ctr)
+            if replace_orig and item.layer ~= nil then
+               item.layer:RemoveObject(item.cad_obj)
+               item.layer:AddObject(new_cad, true)
+            else
+               local out_layer = job.LayerManager:GetLayerWithName(g_options.filletOutputLayer)
+               out_layer:AddObject(new_cad, true)
+            end
+
+            table.insert(new_selected, new_cad)
+         end
+      end
+
+      if g_options.filletScope == 1 and #new_selected > 0 then
+         job.Selection:Clear()
+         for _, obj in ipairs(new_selected) do
+            job.Selection:Add(obj, true, true)
+         end
+      end
+
+      return sheet_parts, sheet_corners
+   end
 
    if g_options.filletScope == 3 then
       -- All Sheets in Job
       local sheet_mgr = job.SheetManager
       local num_sheets = (sheet_mgr ~= nil) and sheet_mgr.NumberOfSheets or 1
-      LogMsg(dialog, "Scope       : All Sheets (" .. num_sheets .. " sheets)\n")
+      LogMsg(dialog, 'Scope       : All Sheets (' .. num_sheets .. ' sheets)\n')
 
       if sheet_mgr ~= nil and num_sheets > 0 then
          local orig_sheet = sheet_mgr.ActiveSheetId
@@ -1396,24 +1435,23 @@ function OnLuaButton_ApplyFilletButton(dialog)
          local s_idx = 0
          for s_id in sheet_ids do
             s_idx = s_idx + 1
-            local s_name = sheet_mgr:GetSheetName(s_id) or ("Sheet " .. s_idx)
+            local s_name = sheet_mgr:GetSheetName(s_id) or ('Sheet ' .. s_idx)
             sheet_mgr.ActiveSheetId = s_id
             job.LayerManager.ActiveSheetIndex = s_idx
             job:Refresh2DView()
 
-            local cgroup, err = GetVectorsForFilletScope(job, 2, s_idx)
-            if cgroup ~= nil then
-               local filleted, corners, ferr = ProcessFilletContourGroup(cgroup, radius, do_tbones)
-               if filleted ~= nil and filleted.Count > 0 then
-                  local added = AddContourGroupToLayer(job, filleted, out_layer)
-                  total_filleted_parts = total_filleted_parts + added
-                  total_corners_all = total_corners_all + corners
-                  LogMsg(dialog, "  âœ” [" .. s_name .. "] Created " .. corners .. " " .. fillet_desc .. "(s) on " .. added .. " part(s).")
+            local targets, err = GetTargetObjectsForFillet(job, 2, s_idx)
+            if targets ~= nil then
+               local parts, corners = ProcessTargets(targets)
+               total_filleted_parts = total_filleted_parts + parts
+               total_corners_all = total_corners_all + corners
+               if corners > 0 then
+                  LogMsg(dialog, '  [OK] [' .. s_name .. '] Created ' .. corners .. ' ' .. fillet_desc .. '(s) on ' .. parts .. ' part(s).')
                else
-                  LogMsg(dialog, "  - [" .. s_name .. "] " .. (ferr or "No qualifying internal corners."))
+                  LogMsg(dialog, '  - [' .. s_name .. '] No qualifying internal corners.')
                end
             else
-               LogMsg(dialog, "  - [" .. s_name .. "] No closed vectors.")
+               LogMsg(dialog, '  - [' .. s_name .. '] No closed vectors.')
             end
          end
          if orig_sheet ~= nil then
@@ -1423,32 +1461,36 @@ function OnLuaButton_ApplyFilletButton(dialog)
       end
    else
       -- Scope 1 (Selected) or Scope 2 (All on active sheet)
-      local scope_name = (g_options.filletScope == 1) and "Selected Vectors" or "All Vectors on Active Sheet"
-      LogMsg(dialog, "Scope       : " .. scope_name .. "\n")
+      local scope_name = (g_options.filletScope == 1) and 'Selected Vectors' or 'All Vectors on Active Sheet'
+      LogMsg(dialog, 'Scope       : ' .. scope_name .. '\n')
 
       local cur_sheet_idx = job.LayerManager.ActiveSheetIndex
-      local cgroup, err = GetVectorsForFilletScope(job, g_options.filletScope, cur_sheet_idx)
-      if cgroup == nil then
-         LogMsg(dialog, "âŒ Error: " .. (err or "No vectors found."))
-         MessageBox(err or "No vectors found to fillet.")
+      local targets, err = GetTargetObjectsForFillet(job, g_options.filletScope, cur_sheet_idx)
+      if targets == nil then
+         LogMsg(dialog, 'Error: ' .. (err or 'No vectors found.'))
+         MessageBox(err or 'No vectors found to fillet.')
          return true
       end
 
-      local filleted, corners, ferr = ProcessFilletContourGroup(cgroup, radius, do_tbones)
-      if filleted == nil or filleted.Count == 0 then
-         LogMsg(dialog, "âš  Notice: " .. (ferr or "No internal corners found."))
-         MessageBox(ferr or "No internal corners qualified for filleting with this tool diameter.")
-         return true
-      end
-
-      local added = AddContourGroupToLayer(job, filleted, out_layer)
-      total_filleted_parts = total_filleted_parts + added
+      local parts, corners = ProcessTargets(targets)
+      total_filleted_parts = total_filleted_parts + parts
       total_corners_all = total_corners_all + corners
-      LogMsg(dialog, "âœ” Successfully created " .. corners .. " " .. fillet_desc .. "(s) across " .. added .. " part(s)!")
+
+      if corners == 0 then
+         LogMsg(dialog, 'Notice: No internal corners qualified for filleting with this tool diameter.')
+         MessageBox('No internal corners qualified for filleting with this tool diameter (' .. string.format('%.4f', tool_diam) .. ').')
+         return true
+      end
+
+      LogMsg(dialog, 'Successfully created ' .. corners .. ' ' .. fillet_desc .. '(s) across ' .. parts .. ' part(s)!')
    end
 
-   LogMsg(dialog, "\n========================================")
-   LogMsg(dialog, "Filleting Complete: " .. total_corners_all .. " corner(s) filleted on layer '" .. out_layer .. "'.")
+   LogMsg(dialog, '\n========================================')
+   if replace_orig then
+      LogMsg(dialog, 'Filleting Complete: ' .. total_corners_all .. ' corner(s) filleted directly on original object layer(s).')
+   else
+      LogMsg(dialog, 'Filleting Complete: ' .. total_corners_all .. ' corner(s) filleted on layer \'' .. g_options.filletOutputLayer .. '\'.')
+   end
    job:Refresh2DView()
    SaveDefaults(g_options, job)
    return true
@@ -1458,8 +1500,8 @@ end
 function OnLuaButton_CreateFilletMarkersButton(dialog)
    local job = VectricJob()
    if not job.Exists then
-      LogMsg(dialog, "âŒ Error: No active job found.")
-      MessageBox("No active job found.")
+      LogMsg(dialog, 'Error: No active job found.')
+      MessageBox('No active job found.')
       return true
    end
 
@@ -1468,54 +1510,51 @@ function OnLuaButton_CreateFilletMarkersButton(dialog)
 
    local tool_diam = g_options.filletToolDiam
    if tool_diam <= 0 then
-      LogMsg(dialog, "âŒ Error: Tool Diameter must be positive.")
-      MessageBox("Tool Diameter must be positive.")
+      LogMsg(dialog, 'Error: Tool Diameter must be positive.')
+      MessageBox('Tool Diameter must be positive.')
       return true
    end
 
    local radius = (0.5 * tool_diam) + g_options.filletAllowance
-   local marker_layer = "FilletMarkers"
+   local fillet_type = g_options.filletType
+   local marker_layer = 'FilletMarkers'
 
-   LogMsg(dialog, "=== Corner Fillet Markers Preview ===")
-   LogMsg(dialog, "Detecting internal corners for Tool Diam: " .. string.format("%.4f", tool_diam))
+   LogMsg(dialog, '=== Corner Fillet Markers Preview ===')
+   LogMsg(dialog, 'Detecting internal corners for Tool Diam: ' .. string.format('%.4f', tool_diam))
 
    local cur_sheet_idx = job.LayerManager.ActiveSheetIndex
-   local cgroup, err = GetVectorsForFilletScope(job, g_options.filletScope, cur_sheet_idx)
-   if cgroup == nil then
-      LogMsg(dialog, "âŒ Error: " .. (err or "No vectors found."))
-      MessageBox(err or "No vectors found to detect corners.")
-      return true
-   end
-
-   local out_cw = cgroup:Offset(radius, radius, 1, true)
-   local rounded_cw = out_cw:Offset(-radius, -radius, 1, true)
-   local out_ccw = cgroup:Offset(radius, radius, 1, true)
-   local rounded_ccw = out_ccw:Offset(-radius, -radius, 1, true)
-
-   local ccw_circles, ccw_markers = ComputeCornerMarkers(rounded_ccw, radius, true)
-   local cw_circles, cw_markers = ComputeCornerMarkers(rounded_cw, radius, false)
-
-   local total_corners = #ccw_markers + #cw_markers
-   if total_corners == 0 then
-      LogMsg(dialog, "âš  No internal sharp corners detected for tool diameter " .. tostring(tool_diam))
-      MessageBox("No internal sharp corners detected.")
+   local targets, err = GetTargetObjectsForFillet(job, g_options.filletScope, cur_sheet_idx)
+   if targets == nil then
+      LogMsg(dialog, 'Error: ' .. (err or 'No vectors found.'))
+      MessageBox(err or 'No vectors found to detect corners.')
       return true
    end
 
    local marker_group = ContourGroup(true)
-   for _, c in ipairs(ccw_circles) do
-      marker_group:AddTail(CreateCircle(c.x, c.y, radius, 0.0, 0.0))
+   local total_corners = 0
+
+   for _, item in ipairs(targets) do
+      local _, count, corners = FilletSingleContour(item.contour, radius, fillet_type)
+      if count > 0 and corners ~= nil then
+         for _, c in ipairs(corners) do
+            if c.filleted and c.vertex ~= nil then
+               total_corners = total_corners + 1
+               marker_group:AddTail(CreateCircle(c.vertex.x, c.vertex.y, radius, 0.0, 0.0))
+            end
+         end
+      end
    end
-   for _, c in ipairs(cw_circles) do
-      marker_group:AddTail(CreateCircle(c.x, c.y, radius, 0.0, 0.0))
+
+   if total_corners == 0 then
+      LogMsg(dialog, 'No internal sharp corners detected for tool diameter ' .. tostring(tool_diam))
+      MessageBox('No internal sharp corners detected.')
+      return true
    end
-   for _, m in ipairs(ccw_markers) do marker_group:AddTail(m) end
-   for _, m in ipairs(cw_markers) do marker_group:AddTail(m) end
 
    AddContourGroupToLayer(job, marker_group, marker_layer)
    job:Refresh2DView()
 
-   LogMsg(dialog, "âœ” Created " .. total_corners .. " corner preview marker(s) on layer '" .. marker_layer .. "'.")
+   LogMsg(dialog, 'Created ' .. total_corners .. ' corner preview circle(s) on layer \'' .. marker_layer .. '\'.')
    SaveDefaults(g_options, job)
    return true
 end
@@ -1561,6 +1600,7 @@ function DisplayDialog(script_path, job)
    -- Fillet tab fields
    dialog:AddDoubleField("FilletToolDiamEdit", g_options.filletToolDiam)
    dialog:AddDoubleField("FilletAllowanceEdit", g_options.filletAllowance)
+   dialog:AddCheckBox("FilletReplaceOriginalCheck", g_options.filletReplaceOriginal)
    dialog:AddTextField("FilletOutputLayerEdit", g_options.filletOutputLayer)
    dialog:AddRadioGroup("FilletTypeRadio", g_options.filletType)
    dialog:AddRadioGroup("FilletScopeRadio", g_options.filletScope)

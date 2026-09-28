@@ -41,8 +41,9 @@ In standard Vectric software, loading a toolpath template (`.vtpt`) only applies
 Standard VCarve requires clicking individual corners one by one to add fillets. Nested Sheet Assist includes a dedicated **Auto Fillet** tab that:
 - **Instant Internal Corner Detection**: Scans closed contours and detects all inside sharp corners needing tool clearance.
 - **T-Bone & Dog-Bone Modes**: Choose **T-Bone** (extends along the longest edge for a discreet, flush joint fit) or **Dog-Bone** (extends 45° along the corner bisector).
-- **Flexible Scope**: Apply across **Selected Vectors**, **All Closed Vectors on Active Sheet**, or **All Sheets in Job**.
-- **One-Click Generation**: Automatically creates ready-to-cut filleted vectors on a dedicated layer (`FilletedContours`), or outputs preview markers (`FilletMarkers`) before committing.
+- **In-Place Layer Placement (Native VCarve Behavior)**: Automatically applies fillets directly to each object's original layer (replacing the original vector in-place, preserving toolpath layer associations without creating duplicate/overlapping lines), with an option to place copies on a dedicated layer if desired.
+- **Clean Tangent Arcs**: Generates precise circular clearance arcs matching native VCarve filleting without zero-width slits, needle retraces, or doubled passes.
+- **One-Click Generation**: Automatically applies fillets in a single click, or outputs visual preview circles on layer `FilletMarkers` before committing.
 
 ---
 
