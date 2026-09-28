@@ -265,6 +265,13 @@ function OnLuaButton_OnlyVisibleToolpathsCheck(dialog)
    return true
 end
 
+function OnLuaButton_FilletTypeRadio_1(dialog) return true end
+function OnLuaButton_FilletTypeRadio_2(dialog) return true end
+function OnLuaButton_FilletScopeRadio_1(dialog) return true end
+function OnLuaButton_FilletScopeRadio_2(dialog) return true end
+function OnLuaButton_FilletScopeRadio_3(dialog) return true end
+function OnLuaButton_FilletReplaceOriginalCheck(dialog) return true end
+
 function IsToolpathOnSheet(tp, s_id, s_idx, s_name, num_sheets)
    if tp == nil then return false end
 
