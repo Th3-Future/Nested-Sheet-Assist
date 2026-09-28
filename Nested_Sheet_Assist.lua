@@ -1045,17 +1045,102 @@ end
 
 local function IsInternalCorner(is_ccw, cross, dot, angle)
    if is_ccw then
-      -- CCW contour: material is on the left; an internal/concave corner is a RIGHT turn
       if cross < -0.25 and math.abs(dot) < 0.70 then
          return true
       end
    else
-      -- CW contour: material is on the right; an internal/concave corner is a LEFT turn
       if cross > 0.25 and math.abs(dot) < 0.70 then
          return true
       end
    end
    return false
+end
+
+local function utAngleRad2d(x1, y1, x2, y2, x3, y3)
+   local x = (x1 - x2) * (x3 - x2) + (y1 - y2) * (y3 - y2)
+   local y = (x1 - x2) * (y3 - y2) - (y1 - y2) * (x3 - x2)
+   if x == 0.0 and y == 0.0 then
+      return 0.0
+   else
+      local val = math.atan2(y, x)
+      if val < 0.0 then val = val + 2.0 * math.pi end
+      return val
+   end
+end
+
+local function GetInternalAngleArc(arc_span, arc_centre)
+   local start_pt = arc_span.StartPoint2D
+   local end_pt   = arc_span.EndPoint2D
+   if arc_span.IsClockwise then
+      return utAngleRad2d(end_pt.x, end_pt.y, arc_centre.x, arc_centre.y, start_pt.x, start_pt.y)
+   else
+      return utAngleRad2d(start_pt.x, start_pt.y, arc_centre.x, arc_centre.y, end_pt.x, end_pt.y)
+   end
+end
+
+local function GetEndPointArcBisector(arc_span, radius, start_point, mid_point)
+   local internal_angle = GetInternalAngleArc(arc_span, start_point)
+   local corner_angle = math.pi - internal_angle
+   local sin_val = math.sin(0.5 * corner_angle)
+   if math.abs(sin_val) < 0.0001 then sin_val = 0.0001 end
+   local offset_distance = (radius / sin_val) - radius
+   local dx = mid_point.x - start_point.x
+   local dy = mid_point.y - start_point.y
+   local len = math.sqrt(dx * dx + dy * dy)
+   if len < 0.0001 then len = 0.0001 end
+   return Point2D(start_point.x + offset_distance * (dx / len),
+                  start_point.y + offset_distance * (dy / len))
+end
+
+-- Uses Vectric native C++ offset kernel to reliably discover sharp internal corners
+local function DetectCornersViaOffset(contour, radius)
+   local detected = {}
+   local ok, err = pcall(function()
+      local cg = ContourGroup(true)
+      cg:AddTail(contour:Clone())
+
+      local is_ccw = contour.IsCCW
+      local r_out = is_ccw and radius or -radius
+      local r_in  = is_ccw and -radius or radius
+
+      local tol = math.min(radius * 0.1, 0.02)
+      local out_group = cg:Offset(r_out, tol, 1, true)
+      if out_group == nil or out_group.IsEmpty then return end
+
+      local in_group = out_group:Offset(r_in, tol, 1, true)
+      if in_group == nil or in_group.IsEmpty then return end
+
+      local pos = in_group:GetHeadPosition()
+      while pos ~= nil do
+         local ctr = nil
+         ctr, pos = in_group:GetNext(pos)
+         if ctr ~= nil then
+            local sp_pos = ctr:GetHeadPosition()
+            while sp_pos ~= nil do
+               local sp = nil
+               sp, sp_pos = ctr:GetNext(sp_pos)
+               if sp ~= nil and sp.IsArcType then
+                  local arc_sp = CastSpanToArcSpan(sp)
+                  local centre = Point3D()
+                  local arc_r = arc_sp:RadiusAndCentre(centre)
+                  if math.abs(arc_r - radius) < (radius * 0.45) then
+                     local mid_pt = arc_sp:ArcMidPoint()
+                     local corner_pt = GetEndPointArcBisector(arc_sp, radius, centre, mid_pt)
+                     table.insert(detected, {
+                        corner = Point2D(corner_pt.x, corner_pt.y),
+                        centre = Point2D(centre.x, centre.y),
+                        radius = arc_r
+                     })
+                  end
+               end
+            end
+         end
+      end
+   end)
+   if not ok then
+      WriteDebugLog("DetectCornersViaOffset pcall error: " .. tostring(err))
+   end
+   return detected
 end
 
 function FilletSingleContour(contour, radius, fillet_type)
@@ -1085,6 +1170,10 @@ function FilletSingleContour(contour, radius, fillet_type)
    -- For CW: material is to the right of t_in -> negative bulge (-1.0) curves into wall
    local bulge_sign = is_ccw and 1.0 or -1.0
 
+   -- Run offset-based detection to find internal sharp corners
+   local offset_corners = DetectCornersViaOffset(contour, radius)
+   WriteDebugLog("FilletSingleContour: n=" .. n .. ", is_ccw=" .. tostring(is_ccw) .. ", offset_corners=" .. tostring(#offset_corners))
+
    local corners = {}
    local total_corners_filleted = 0
 
@@ -1109,23 +1198,25 @@ function FilletSingleContour(contour, radius, fillet_type)
 
       local cross, dot, angle = GetTurnInfo(t_in, t_out)
 
+      -- Check if vertex matches any corner identified by offset kernel
+      local matched_offset = false
+      for _, oc in ipairs(offset_corners) do
+         local dist_sq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
+         if dist_sq < 0.0025 then -- within 0.05 inches
+            matched_offset = true
+            break
+         end
+      end
+
+      local is_internal = matched_offset or IsInternalCorner(is_ccw, cross, dot, angle)
+
       local filleted = false
       local corner_info = { filleted = false, vertex = v }
 
-      if IsInternalCorner(is_ccw, cross, dot, angle) then
+      if is_internal then
          if fillet_type == 1 then
-            -- T-Bone Fillet: place on longer span
-            local can_in = (len_in >= 2.0 * radius)
-            local can_out = (len_out >= 2.0 * radius)
-            local place_on = nil
-
-            if can_in and can_out then
-               if len_in >= len_out then place_on = 'in' else place_on = 'out' end
-            elseif can_in then
-               place_on = 'in'
-            elseif can_out then
-               place_on = 'out'
-            end
+            -- T-Bone Fillet: place on longer span to keep mating edge flat
+            local place_on = (len_in >= len_out) and 'in' or 'out'
 
             if place_on == 'in' then
                filleted = true
@@ -1137,7 +1228,7 @@ function FilletSingleContour(contour, radius, fillet_type)
                   vertex = v,
                   bulge = bulge_sign * 1.0
                }
-            elseif place_on == 'out' then
+            else
                filleted = true
                corner_info = {
                   filleted = true,
@@ -1151,17 +1242,15 @@ function FilletSingleContour(contour, radius, fillet_type)
          else
             -- Dog-Bone Fillet: 45 degree extension
             local d = radius
-            if len_in >= d and len_out >= d then
-               filleted = true
-               corner_info = {
-                  filleted = true,
-                  type = 'dogbone',
-                  p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y),
-                  p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y),
-                  vertex = v,
-                  bulge = bulge_sign * 2.41421356
-               }
-            end
+            filleted = true
+            corner_info = {
+               filleted = true,
+               type = 'dogbone',
+               p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y),
+               p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y),
+               vertex = v,
+               bulge = bulge_sign * 2.41421356
+            }
          end
       end
 
