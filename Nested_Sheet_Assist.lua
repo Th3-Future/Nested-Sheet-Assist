@@ -1019,6 +1019,23 @@ end
 |
 ========================================================================== ]]
 
+local function CloneSpanGeometry(span)
+   if span.IsLineType then
+      return LineSpan(span.StartPoint2D, span.EndPoint2D)
+   elseif span.IsArcType then
+      local arc_span = CastSpanToArcSpan(span)
+      return ArcSpan(span.StartPoint2D, span.EndPoint2D, arc_span.Bulge)
+   elseif span.IsBezierType then
+      local bspan = CastSpanToBezierSpan(span)
+      return BezierSpan(bspan.StartPoint2D,
+                        bspan.EndPoint2D,
+                        span:GetControlPointPosition(0),
+                        span:GetControlPointPosition(1))
+   else
+      return LineSpan(span.StartPoint2D, span.EndPoint2D)
+   end
+end
+
 local function GetTurnInfo(t_in, t_out)
    local cross = t_in.x * t_out.y - t_in.y * t_out.x
    local dot = t_in.x * t_out.x + t_in.y * t_out.y
@@ -1028,11 +1045,13 @@ end
 
 local function IsInternalCorner(is_ccw, cross, dot, angle)
    if is_ccw then
-      if cross < -0.3 and math.abs(dot) < 0.65 then
+      -- CCW contour: material is on the left; an internal/concave corner is a RIGHT turn
+      if cross < -0.25 and math.abs(dot) < 0.70 then
          return true
       end
    else
-      if cross > 0.3 and math.abs(dot) < 0.65 then
+      -- CW contour: material is on the right; an internal/concave corner is a LEFT turn
+      if cross > 0.25 and math.abs(dot) < 0.70 then
          return true
       end
    end
@@ -1060,7 +1079,11 @@ function FilletSingleContour(contour, radius, fillet_type)
    end
 
    local is_ccw = contour.IsCCW
-   local bulge_sign = is_ccw and -1.0 or 1.0
+   -- For T-bone semicircle:
+   -- When extending along incoming edge (direction t_in) from P_cut to V:
+   -- For CCW: material is to the left of t_in -> positive bulge (+1.0) curves into wall
+   -- For CW: material is to the right of t_in -> negative bulge (-1.0) curves into wall
+   local bulge_sign = is_ccw and 1.0 or -1.0
 
    local corners = {}
    local total_corners_filleted = 0
@@ -1127,7 +1150,7 @@ function FilletSingleContour(contour, radius, fillet_type)
             end
          else
             -- Dog-Bone Fillet: 45 degree extension
-            local d = 1.41421356 * radius
+            local d = radius
             if len_in >= d and len_out >= d then
                filleted = true
                corner_info = {
@@ -1136,7 +1159,7 @@ function FilletSingleContour(contour, radius, fillet_type)
                   p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y),
                   p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y),
                   vertex = v,
-                  bulge = bulge_sign * 1.0
+                  bulge = bulge_sign * 2.41421356
                }
             end
          end
@@ -1158,48 +1181,47 @@ function FilletSingleContour(contour, radius, fillet_type)
       local prev_corner_idx = ((k - 2 + n) % n) + 1
       local prev_c = corners[prev_corner_idx]
       local cur_c = corners[k]
-
       local s = spans[k]
-      local start_pt = s.StartPoint2D
-      if prev_c.filleted then
-         if prev_c.type == 'dogbone' then
-            start_pt = prev_c.p_out
-         elseif prev_c.type == 'tbone' then
-            if prev_c.place_on == 'out' then
-               start_pt = prev_c.p_cut
-            else
-               start_pt = prev_c.vertex
+
+      if not prev_c.filleted and not cur_c.filleted then
+         -- Neither endpoint is modified: preserve original geometry (arc, bezier, line) perfectly
+         new_contour:AppendSpan(CloneSpanGeometry(s))
+      else
+         -- One or both endpoints were trimmed: this is a straight edge adjoining a corner
+         local start_pt = s.StartPoint2D
+         if prev_c.filleted then
+            if prev_c.type == 'dogbone' then
+               start_pt = prev_c.p_out
+            elseif prev_c.type == 'tbone' then
+               if prev_c.place_on == 'out' then
+                  start_pt = prev_c.p_cut
+               else
+                  start_pt = prev_c.vertex
+               end
             end
+         end
+
+         local end_pt = s.EndPoint2D
+         if cur_c.filleted then
+            if cur_c.type == 'dogbone' then
+               end_pt = cur_c.p_in
+            elseif cur_c.type == 'tbone' then
+               if cur_c.place_on == 'in' then
+                  end_pt = cur_c.p_cut
+               else
+                  end_pt = cur_c.vertex
+               end
+            end
+         end
+
+         local dx = end_pt.x - start_pt.x
+         local dy = end_pt.y - start_pt.y
+         if (dx * dx + dy * dy) > 0.000001 then
+            new_contour:AppendSpan(LineSpan(start_pt, end_pt))
          end
       end
 
-      local end_pt = s.EndPoint2D
-      if cur_c.filleted then
-         if cur_c.type == 'dogbone' then
-            end_pt = cur_c.p_in
-         elseif cur_c.type == 'tbone' then
-            if cur_c.place_on == 'in' then
-               end_pt = cur_c.p_cut
-            else
-               end_pt = cur_c.vertex
-            end
-         end
-      end
-
-      local s_dx = s.EndPoint2D.x - s.StartPoint2D.x
-      local s_dy = s.EndPoint2D.y - s.StartPoint2D.y
-      local s_len = math.sqrt(s_dx * s_dx + s_dy * s_dy)
-      if s_len < 0.0001 then s_len = 0.0001 end
-      local t_dir = { x = s_dx / s_len, y = s_dy / s_len }
-
-      local seg_dx = end_pt.x - start_pt.x
-      local seg_dy = end_pt.y - start_pt.y
-      local seg_proj = seg_dx * t_dir.x + seg_dy * t_dir.y
-
-      if seg_proj > 0.001 then
-         new_contour:AppendSpan(LineSpan(start_pt, end_pt))
-      end
-
+      -- If corner k is filleted, append its fillet arc
       if cur_c.filleted then
          if cur_c.type == 'dogbone' then
             new_contour:AppendSpan(ArcSpan(cur_c.p_in, cur_c.p_out, cur_c.bulge))
@@ -1210,6 +1232,16 @@ function FilletSingleContour(contour, radius, fillet_type)
                new_contour:AppendSpan(ArcSpan(cur_c.vertex, cur_c.p_cut, cur_c.bulge))
             end
          end
+      end
+   end
+
+   -- Ensure contour closure
+   if not new_contour.IsEmpty and not new_contour.IsClosed then
+      local p_first = new_contour.StartPoint2D
+      local p_last = new_contour.EndPoint2D
+      local gap_sq = (p_first.x - p_last.x)^2 + (p_first.y - p_last.y)^2
+      if gap_sq > 0.000001 then
+         new_contour:LineTo(p_first)
       end
    end
 
@@ -1299,7 +1331,7 @@ function GetTargetObjectsForFillet(job, scope, sheet_index)
       while layer_pos ~= nil do
          local layer = nil
          layer, layer_pos = layer_mgr:GetNext(layer_pos)
-         if layer ~= nil and not layer.IsSystemLayer then
+         if layer ~= nil and not layer.IsSystemLayer and layer.Name ~= g_options.filletOutputLayer and layer.Name ~= "FilletMarkers" then
             local obj_pos = layer:GetHeadPosition()
             while obj_pos ~= nil do
                local obj = nil
@@ -1412,7 +1444,8 @@ function OnLuaButton_ApplyFilletButton(dialog)
       WriteDebugLog('ProcessTargets: processing ' .. tostring(#target_list) .. ' target(s). ActiveSheetIndex: ' .. tostring(job.LayerManager.ActiveSheetIndex))
       for idx, item in ipairs(target_list) do
          local filleted_ctr, corners = FilletSingleContour(item.contour, radius, fillet_type)
-         WriteDebugLog('Item ' .. idx .. ': SheetIndex=' .. tostring(item.sheet_index) .. ', corners=' .. tostring(corners) .. ', filleted_ctr.Count=' .. tostring(filleted_ctr and filleted_ctr.Count) .. ', IsClosed=' .. tostring(filleted_ctr and filleted_ctr.IsClosed) .. ', IsEmpty=' .. tostring(filleted_ctr and filleted_ctr.IsEmpty))
+         local layer_name = item.layer and item.layer.Name or "unknown"
+         WriteDebugLog("Item " .. idx .. " [" .. layer_name .. "]: orig_Count=" .. tostring(item.contour and item.contour.Count) .. ", corners=" .. tostring(corners) .. ", new_Count=" .. tostring(filleted_ctr and filleted_ctr.Count) .. ", IsClosed=" .. tostring(filleted_ctr and filleted_ctr.IsClosed))
          if corners > 0 and filleted_ctr ~= nil then
             sheet_corners = sheet_corners + corners
             sheet_parts = sheet_parts + 1
