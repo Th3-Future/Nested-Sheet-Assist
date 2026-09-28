@@ -1173,44 +1173,62 @@ function FilletSingleContour(contour, radius, fillet_type)
       return contour:Clone(), 0, {}
    end
 
-   -- Pass 1: Map each detected offset corner to the single closest vertex on the contour
-   -- Each offset corner claims at most ONE unique vertex within 0.08"
+   -- Pass 1: Identify all internal sharp corners on the contour
    local corner_info_map = {}
    local total_corners_filleted = 0
 
-   for _, oc in ipairs(offset_corners) do
-      local best_k = nil
-      local best_dist_sq = 0.0064 -- (0.08 inches)^2
-      for i = 1, n do
-         local v = spans[i].EndPoint2D
-         local dsq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
-         if dsq < best_dist_sq then
-            best_dist_sq = dsq
-            best_k = i
+   for i = 1, n do
+      local s_in = spans[i]
+      local next_k = (i % n) + 1
+      local s_out = spans[next_k]
+
+      local v = s_in.EndPoint2D
+
+      local dx_in = v.x - s_in.StartPoint2D.x
+      local dy_in = v.y - s_in.StartPoint2D.y
+      local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+      if len_in < 0.0001 then len_in = 0.0001 end
+      local t_in = { x = dx_in / len_in, y = dy_in / len_in }
+
+      local dx_out = s_out.EndPoint2D.x - v.x
+      local dy_out = s_out.EndPoint2D.y - v.y
+      local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+      if len_out < 0.0001 then len_out = 0.0001 end
+      local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+
+      local cross = t_in.x * t_out.y - t_in.y * t_out.x
+      local dot = t_in.x * t_out.x + t_in.y * t_out.y
+
+      -- Internal corner check:
+      -- For CCW: right turn into material (cross < -0.25, |dot| < 0.75)
+      -- For CW: left turn into material (cross > 0.25, |dot| < 0.75)
+      local is_internal = false
+      if is_ccw then
+         if cross < -0.25 and math.abs(dot) < 0.75 then
+            is_internal = true
+         end
+      else
+         if cross > 0.25 and math.abs(dot) < 0.75 then
+            is_internal = true
          end
       end
 
-      if best_k ~= nil and corner_info_map[best_k] == nil then
-         local s_in = spans[best_k]
-         local next_k = (best_k % n) + 1
-         local s_out = spans[next_k]
+      -- Proximity to detected offset center check
+      if not is_internal and #offset_corners > 0 then
+         for _, oc in ipairs(offset_corners) do
+            local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+            if dsq < (radius * 1.6)^2 then
+               if (is_ccw and cross < -0.1) or (not is_ccw and cross > 0.1) then
+                  is_internal = true
+                  break
+               end
+            end
+         end
+      end
 
-         local v = s_in.EndPoint2D
-
-         local dx_in = v.x - s_in.StartPoint2D.x
-         local dy_in = v.y - s_in.StartPoint2D.y
-         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
-         if len_in < 0.0001 then len_in = 0.0001 end
-         local t_in = { x = dx_in / len_in, y = dy_in / len_in }
-
-         local dx_out = s_out.EndPoint2D.x - v.x
-         local dy_out = s_out.EndPoint2D.y - v.y
-         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
-         if len_out < 0.0001 then len_out = 0.0001 end
-         local t_out = { x = dx_out / len_out, y = dy_out / len_out }
-
-         corner_info_map[best_k] = {
-            k = best_k,
+      if is_internal then
+         corner_info_map[i] = {
+            k = i,
             next_k = next_k,
             vertex = v,
             t_in = t_in,
@@ -1218,9 +1236,23 @@ function FilletSingleContour(contour, radius, fillet_type)
             len_in = len_in,
             len_out = len_out
          }
-         total_corners_filleted = total_corners_filleted + 1
       end
    end
+
+   -- Filter out consecutive duplicate matches
+   local filtered_corners = {}
+   for k, cinfo in pairs(corner_info_map) do
+      local prev_k = ((k - 2 + n) % n) + 1
+      if corner_info_map[prev_k] == nil then
+         filtered_corners[k] = cinfo
+      else
+         if cinfo.len_in >= corner_info_map[prev_k].len_in then
+            filtered_corners[k] = cinfo
+         end
+      end
+   end
+   corner_info_map = filtered_corners
+   for _ in pairs(corner_info_map) do total_corners_filleted = total_corners_filleted + 1 end
 
    if total_corners_filleted == 0 then
       return contour:Clone(), 0, {}
