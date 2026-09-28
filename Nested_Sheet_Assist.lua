@@ -1109,13 +1109,13 @@ local function GetEndPointArcBisector(arc_span, radius, start_point, mid_point)
    local corner_angle = math.pi - internal_angle
    local sin_val = math.sin(0.5 * corner_angle)
    if math.abs(sin_val) < 0.0001 then sin_val = 0.0001 end
-   local offset_distance = (radius / sin_val) - radius
+   local dist_to_corner = radius / sin_val
    local dx = mid_point.x - start_point.x
    local dy = mid_point.y - start_point.y
    local len = math.sqrt(dx * dx + dy * dy)
    if len < 0.0001 then len = 0.0001 end
-   return Point2D(start_point.x + offset_distance * (dx / len),
-                  start_point.y + offset_distance * (dy / len))
+   return Point2D(start_point.x + dist_to_corner * (dx / len),
+                  start_point.y + dist_to_corner * (dy / len))
 end
 
 -- Uses Vectric native C++ offset kernel to reliably discover sharp internal corners
@@ -1204,13 +1204,26 @@ function FilletSingleContour(contour, radius, fillet_type)
 
    for _, oc in ipairs(offset_corners) do
       local best_k = nil
-      local best_dist_sq = (radius * 1.6) * (radius * 1.6)
+      local best_dist_sq = (radius * 0.8) * (radius * 0.8)
       for i = 1, n do
          local v = spans[i].EndPoint2D
-         local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+         local dsq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
          if dsq < best_dist_sq then
             best_dist_sq = dsq
             best_k = i
+         end
+      end
+
+      -- If no match found near oc.corner, try matching near oc.centre as fallback
+      if best_k == nil then
+         local fallback_dist_sq = (radius * 1.6) * (radius * 1.6)
+         for i = 1, n do
+            local v = spans[i].EndPoint2D
+            local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+            if dsq < fallback_dist_sq then
+               fallback_dist_sq = dsq
+               best_k = i
+            end
          end
       end
 
@@ -1233,16 +1246,20 @@ function FilletSingleContour(contour, radius, fillet_type)
          if len_out < 0.0001 then len_out = 0.0001 end
          local t_out = { x = dx_out / len_out, y = dy_out / len_out }
 
-         corner_info_map[best_k] = {
-            k = best_k,
-            next_k = next_k,
-            vertex = v,
-            t_in = t_in,
-            t_out = t_out,
-            len_in = len_in,
-            len_out = len_out
-         }
-         total_corners_filleted = total_corners_filleted + 1
+         local dot = t_in.x * t_out.x + t_in.y * t_out.y
+         -- Ensure this vertex is an actual sharp turn (not a flat subdivided line segment)
+         if math.abs(dot) < 0.85 then
+            corner_info_map[best_k] = {
+               k = best_k,
+               next_k = next_k,
+               vertex = v,
+               t_in = t_in,
+               t_out = t_out,
+               len_in = len_in,
+               len_out = len_out
+            }
+            total_corners_filleted = total_corners_filleted + 1
+         end
       end
    end
 
@@ -1262,7 +1279,6 @@ function FilletSingleContour(contour, radius, fillet_type)
 
    -- Pass 3: Calculate fillet geometry and trim endpoints A and B
    local fillet_arcs = {}
-   local bulge_sign = is_ccw and 1.0 or -1.0
 
    for k, cinfo in pairs(corner_info_map) do
       local v = cinfo.vertex
@@ -1291,11 +1307,17 @@ function FilletSingleContour(contour, radius, fillet_type)
             end
          end
 
-         local bulge = bulge_sign * 1.0
-
          if place_on == 'in' then
             local p_cut = Point2D(v.x - cut_dist * t_in.x, v.y - cut_dist * t_in.y)
             B[k] = p_cut
+            -- Chord travels in direction t_in (from p_cut to v)
+            -- Fillet pocket extends the adjoining wall in direction -t_out
+            local chord_dir = t_in
+            local target_pocket_dir = { x = -t_out.x, y = -t_out.y }
+            local n_left_x = -chord_dir.y
+            local n_left_y = chord_dir.x
+            local dot = n_left_x * target_pocket_dir.x + n_left_y * target_pocket_dir.y
+            local bulge = (dot >= 0) and 1.0 or -1.0
             fillet_arcs[k] = {
                start_pt = p_cut,
                end_pt = v,
@@ -1304,6 +1326,14 @@ function FilletSingleContour(contour, radius, fillet_type)
          else
             local p_cut = Point2D(v.x + cut_dist * t_out.x, v.y + cut_dist * t_out.y)
             A[next_k] = p_cut
+            -- Chord travels in direction t_out (from v to p_cut)
+            -- Fillet pocket extends the incoming wall in direction +t_in
+            local chord_dir = t_out
+            local target_pocket_dir = { x = t_in.x, y = t_in.y }
+            local n_left_x = -chord_dir.y
+            local n_left_y = chord_dir.x
+            local dot = n_left_x * target_pocket_dir.x + n_left_y * target_pocket_dir.y
+            local bulge = (dot >= 0) and 1.0 or -1.0
             fillet_arcs[k] = {
                start_pt = v,
                end_pt = p_cut,
@@ -1311,7 +1341,7 @@ function FilletSingleContour(contour, radius, fillet_type)
             }
          end
       else
-         -- Dog-Bone Fillet: 45 degree extension
+         -- Dog-Bone Fillet: 45 degree extension into corner
          local d = radius
          if d > cinfo.len_in * 0.45 then d = cinfo.len_in * 0.45 end
          if d > cinfo.len_out * 0.45 then d = cinfo.len_out * 0.45 end
@@ -1321,7 +1351,18 @@ function FilletSingleContour(contour, radius, fillet_type)
          B[k] = p_in
          A[next_k] = p_out
 
-         local bulge = bulge_sign * 2.41421356
+         -- Chord from p_in to p_out
+         local chord_dx = p_out.x - p_in.x
+         local chord_dy = p_out.y - p_in.y
+         local n_left_x = -chord_dy
+         local n_left_y = chord_dx
+         local mid_x = 0.5 * (p_in.x + p_out.x)
+         local mid_y = 0.5 * (p_in.y + p_out.y)
+         local to_vx = v.x - mid_x
+         local to_vy = v.y - mid_y
+         local dot_corner = n_left_x * to_vx + n_left_y * to_vy
+         local bulge = (dot_corner >= 0) and 2.41421356 or -2.41421356
+
          fillet_arcs[k] = {
             start_pt = p_in,
             end_pt = p_out,
