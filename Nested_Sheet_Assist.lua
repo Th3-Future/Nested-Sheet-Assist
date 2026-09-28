@@ -30,6 +30,7 @@ g_options = {
    -- Fillet options
    filletToolDiam          = 0.25,
    filletType              = 1, -- 1 = T-Bone, 2 = Dog-Bone
+   tboneDirection          = 1, -- 1 = Longer Wall (Auto), 2 = Horizontal (X-Axis), 3 = Vertical (Y-Axis), 4 = Shorter Wall
    filletAllowance         = 0.0,
    filletReplaceOriginal   = true,
    filletOutputLayer       = "FilletedContours",
@@ -102,6 +103,7 @@ function SaveDefaults(options, job)
    pcall(function()
       registry:SetDouble("filletToolDiam", options.filletToolDiam)
       registry:SetInt("filletType", options.filletType)
+      registry:SetInt("tboneDirection", options.tboneDirection or 1)
       registry:SetDouble("filletAllowance", options.filletAllowance)
       registry:SetBool("filletReplaceOriginal", options.filletReplaceOriginal)
       registry:SetString("filletOutputLayer", options.filletOutputLayer)
@@ -130,6 +132,7 @@ function LoadDefaults(options, job)
       local diam = registry:GetDouble("filletToolDiam", options.filletToolDiam)
       if diam > 0 then options.filletToolDiam = diam end
       options.filletType            = registry:GetInt("filletType", options.filletType)
+      options.tboneDirection        = registry:GetInt("tboneDirection", 1)
       options.filletAllowance       = registry:GetDouble("filletAllowance", options.filletAllowance)
       options.filletReplaceOriginal = registry:GetBool("filletReplaceOriginal", true)
       options.filletOutputLayer     = registry:GetString("filletOutputLayer", options.filletOutputLayer)
@@ -224,6 +227,10 @@ function UpdateOptionsFromDialog(dialog, options)
    pcall(function()
       local f_idx = dialog:GetRadioIndex("FilletTypeRadio")
       if f_idx == 1 or f_idx == 2 then options.filletType = f_idx end
+   end)
+   pcall(function()
+      local tb_idx = dialog:GetRadioIndex("TBoneDirectionRadio")
+      if tb_idx >= 1 and tb_idx <= 4 then options.tboneDirection = tb_idx end
    end)
    pcall(function()
       local s_idx = dialog:GetRadioIndex("FilletScopeRadio")
@@ -1038,32 +1045,23 @@ local function SetLayerRGB(layer, r_255, g_255, b_255)
    pcall(function() layer.Colour = rgb_int end)
 end
 
--- Calculates total continuous collinear length along contour in direction step (-1 or +1)
-local function GetContinuousEdgeLength(spans, n, start_k, step, tangent)
-   local total_len = 0
-   local k = start_k
+-- Calculates total path length along contour from from_k up to and including to_k
+local function GetPathLengthBetweenSpans(spans, n, from_k, to_k)
+   local total_len = 0.0
+   local k = from_k
    for step_count = 1, n do
       local s = spans[k]
       local dx = s.EndPoint2D.x - s.StartPoint2D.x
       local dy = s.EndPoint2D.y - s.StartPoint2D.y
-      local len = math.sqrt(dx * dx + dy * dy)
-      if len > 0.00001 then
-         local tx = dx / len
-         local ty = dy / len
-         local dot = tx * tangent.x + ty * tangent.y
-         if dot > 0.95 then
-            total_len = total_len + len
-         else
-            break
-         end
-      end
-      k = (step < 0) and (((k - 2 + n) % n) + 1) or ((k % n) + 1)
+      total_len = total_len + math.sqrt(dx * dx + dy * dy)
+      if k == to_k then break end
+      k = (k % n) + 1
    end
    return total_len
 end
 
--- Walks backwards from corner k along incoming edge by cut_dist, absorbing micro-segments
-local function TrimIncomingEdge(spans, n, corner_k, cut_dist, t_in)
+-- Walks backwards from corner k along incoming edge by cut_dist, strictly interpolating along span geometry
+local function TrimIncomingEdge(spans, n, corner_k, cut_dist)
    local rem = cut_dist
    local k = corner_k
    local skipped = {}
@@ -1073,7 +1071,10 @@ local function TrimIncomingEdge(spans, n, corner_k, cut_dist, t_in)
       local dy = s.EndPoint2D.y - s.StartPoint2D.y
       local slen = math.sqrt(dx * dx + dy * dy)
       if slen >= rem - 0.0001 then
-         local p_cut = Point2D(s.EndPoint2D.x - rem * t_in.x, s.EndPoint2D.y - rem * t_in.y)
+         local frac = (slen > 0.00001) and (rem / slen) or 0.0
+         if frac > 1.0 then frac = 1.0 end
+         -- Strictly interpolate on span s: from EndPoint2D backwards towards StartPoint2D (zero tilt/deviation)
+         local p_cut = Point2D(s.EndPoint2D.x - frac * dx, s.EndPoint2D.y - frac * dy)
          return k, p_cut, skipped
       else
          skipped[k] = true
@@ -1081,11 +1082,11 @@ local function TrimIncomingEdge(spans, n, corner_k, cut_dist, t_in)
          k = ((k - 2 + n) % n) + 1
       end
    end
-   return corner_k, Point2D(spans[corner_k].EndPoint2D.x - cut_dist * t_in.x, spans[corner_k].EndPoint2D.y - cut_dist * t_in.y), skipped
+   return corner_k, spans[corner_k].StartPoint2D, skipped
 end
 
--- Walks forward from corner next_k along outgoing edge by cut_dist, absorbing micro-segments
-local function TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
+-- Walks forward from corner next_k along outgoing edge by cut_dist, strictly interpolating along span geometry
+local function TrimOutgoingEdge(spans, n, next_k, cut_dist)
    local rem = cut_dist
    local k = next_k
    local skipped = {}
@@ -1095,7 +1096,10 @@ local function TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
       local dy = s.EndPoint2D.y - s.StartPoint2D.y
       local slen = math.sqrt(dx * dx + dy * dy)
       if slen >= rem - 0.0001 then
-         local p_cut = Point2D(s.StartPoint2D.x + rem * t_out.x, s.StartPoint2D.y + rem * t_out.y)
+         local frac = (slen > 0.00001) and (rem / slen) or 0.0
+         if frac > 1.0 then frac = 1.0 end
+         -- Strictly interpolate on span s: from StartPoint2D forwards towards EndPoint2D (zero tilt/deviation)
+         local p_cut = Point2D(s.StartPoint2D.x + frac * dx, s.StartPoint2D.y + frac * dy)
          return k, p_cut, skipped
       else
          skipped[k] = true
@@ -1103,7 +1107,7 @@ local function TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
          k = (k % n) + 1
       end
    end
-   return next_k, Point2D(spans[next_k].StartPoint2D.x + cut_dist * t_out.x, spans[next_k].StartPoint2D.y + cut_dist * t_out.y), skipped
+   return next_k, spans[next_k].EndPoint2D, skipped
 end
 
 local function ClearLayerObjects(layer)
@@ -1253,10 +1257,12 @@ local function DetectCornersViaOffset(contour, radius)
    return detected
 end
 
-function FilletSingleContour(contour, radius, fillet_type)
+function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
    if contour == nil or not contour.IsClosed then
       return contour and contour:Clone() or nil, 0, nil
    end
+
+   tbone_dir = tbone_dir or g_options.tboneDirection or 1
 
    local spans = {}
    local pos = contour:GetHeadPosition()
@@ -1356,6 +1362,19 @@ function FilletSingleContour(contour, radius, fillet_type)
       return contour:Clone(), 0, {}
    end
 
+   -- Collect sorted list of corner indices to accurately measure distance between corners
+   local sorted_corners = {}
+   for k, _ in pairs(corner_info_map) do
+      table.insert(sorted_corners, k)
+   end
+   table.sort(sorted_corners)
+
+   local m_corners = #sorted_corners
+   local corner_index_pos = {}
+   for idx, k in ipairs(sorted_corners) do
+      corner_index_pos[k] = idx
+   end
+
    WriteDebugLog("FilletSingleContour: matched " .. total_corners_filleted .. " unique corner vertices on contour")
 
    -- Pass 2: Initialize start point (A_k) and end point (B_k) for all spans
@@ -1377,39 +1396,86 @@ function FilletSingleContour(contour, radius, fillet_type)
       local next_k = cinfo.next_k
 
       if fillet_type == 1 then
-         -- T-Bone Fillet: evaluate continuous collinear length to place on longer wall
-         local cont_len_in = GetContinuousEdgeLength(spans, n, k, -1, t_in)
-         local cont_len_out = GetContinuousEdgeLength(spans, n, next_k, 1, t_out)
-         local place_on = (cont_len_in >= cont_len_out) and 'in' or 'out'
+         -- T-Bone Fillet
+         -- Measure total path length to adjacent corners along the contour
+         local idx = corner_index_pos[k]
+         local prev_idx = (idx == 1) and m_corners or (idx - 1)
+         local next_idx = (idx == m_corners) and 1 or (idx + 1)
+         local prev_k = sorted_corners[prev_idx]
+         local next_corner_k = sorted_corners[next_idx]
+
+         local len_in_total = GetPathLengthBetweenSpans(spans, n, (prev_k % n) + 1, k)
+         local len_out_total = GetPathLengthBetweenSpans(spans, n, next_k, next_corner_k)
+
+         local place_on = 'in'
+         if tbone_dir == 2 then
+            -- Along Horizontal Walls (X-Axis)
+            if math.abs(t_in.x) > (math.abs(t_in.y) + 0.1) then
+               place_on = 'in'
+            elseif math.abs(t_out.x) > (math.abs(t_out.y) + 0.1) then
+               place_on = 'out'
+            else
+               place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+            end
+         elseif tbone_dir == 3 then
+            -- Along Vertical Walls (Y-Axis)
+            if math.abs(t_in.y) > (math.abs(t_in.x) + 0.1) then
+               place_on = 'in'
+            elseif math.abs(t_out.y) > (math.abs(t_out.x) + 0.1) then
+               place_on = 'out'
+            else
+               place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+            end
+         elseif tbone_dir == 4 then
+            -- Along Shorter Wall
+            place_on = (len_in_total <= len_out_total) and 'in' or 'out'
+         else
+            -- Along Longer Wall (Auto)
+            place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+         end
+
          local cut_dist = 2.0 * radius
 
          if place_on == 'in' then
-            local trim_k, p_cut, skipped = TrimIncomingEdge(spans, n, k, cut_dist, t_in)
+            local trim_k, p_cut, skipped = TrimIncomingEdge(spans, n, k, cut_dist)
             B[trim_k] = p_cut
             for sk in pairs(skipped) do skipped_spans[sk] = true end
 
-            local chord_dir = t_in
+            local chord_dx = v.x - p_cut.x
+            local chord_dy = v.y - p_cut.y
+            local chord_len = math.sqrt(chord_dx * chord_dx + chord_dy * chord_dy)
+            if chord_len < 0.0001 then chord_len = 0.0001 end
+            local chord_dir = { x = chord_dx / chord_len, y = chord_dy / chord_len }
+
             local target_pocket_dir = { x = -t_out.x, y = -t_out.y }
             local n_left_x = -chord_dir.y
             local n_left_y = chord_dir.x
             local dot = n_left_x * target_pocket_dir.x + n_left_y * target_pocket_dir.y
-            local bulge = (dot >= 0) and 1.0 or -1.0
+            -- In Vectric ArcTo: negative bulge curves left, positive bulge curves right.
+            -- dot >= 0 means target pocket is to the left => bulge = -1.0
+            -- dot < 0 means target pocket is to the right => bulge = +1.0
+            local bulge = (dot >= 0) and -1.0 or 1.0
             fillet_arcs[k] = {
                start_pt = p_cut,
                end_pt = v,
                bulge = bulge
             }
          else
-            local trim_k, p_cut, skipped = TrimOutgoingEdge(spans, n, next_k, cut_dist, t_out)
+            local trim_k, p_cut, skipped = TrimOutgoingEdge(spans, n, next_k, cut_dist)
             A[trim_k] = p_cut
             for sk in pairs(skipped) do skipped_spans[sk] = true end
 
-            local chord_dir = t_out
+            local chord_dx = p_cut.x - v.x
+            local chord_dy = p_cut.y - v.y
+            local chord_len = math.sqrt(chord_dx * chord_dx + chord_dy * chord_dy)
+            if chord_len < 0.0001 then chord_len = 0.0001 end
+            local chord_dir = { x = chord_dx / chord_len, y = chord_dy / chord_len }
+
             local target_pocket_dir = { x = t_in.x, y = t_in.y }
             local n_left_x = -chord_dir.y
             local n_left_y = chord_dir.x
             local dot = n_left_x * target_pocket_dir.x + n_left_y * target_pocket_dir.y
-            local bulge = (dot >= 0) and 1.0 or -1.0
+            local bulge = (dot >= 0) and -1.0 or 1.0
             fillet_arcs[k] = {
                start_pt = v,
                end_pt = p_cut,
@@ -1419,8 +1485,8 @@ function FilletSingleContour(contour, radius, fillet_type)
       else
          -- Dog-Bone Fillet: 45 degree extension into corner (around the marker circle)
          local d = radius
-         local trim_in_k, p_in, skipped_in = TrimIncomingEdge(spans, n, k, d, t_in)
-         local trim_out_k, p_out, skipped_out = TrimOutgoingEdge(spans, n, next_k, d, t_out)
+         local trim_in_k, p_in, skipped_in = TrimIncomingEdge(spans, n, k, d)
+         local trim_out_k, p_out, skipped_out = TrimOutgoingEdge(spans, n, next_k, d)
          B[trim_in_k] = p_in
          A[trim_out_k] = p_out
          for sk in pairs(skipped_in) do skipped_spans[sk] = true end
@@ -1436,7 +1502,7 @@ function FilletSingleContour(contour, radius, fillet_type)
          local to_vx = v.x - mid_x
          local to_vy = v.y - mid_y
          local dot_corner = n_left_x * to_vx + n_left_y * to_vy
-         local bulge = (dot_corner >= 0) and 2.41421356 or -2.41421356
+         local bulge = (dot_corner >= 0) and -2.41421356 or 2.41421356
 
          fillet_arcs[k] = {
             start_pt = p_in,
@@ -1481,7 +1547,7 @@ function FilletSingleContour(contour, radius, fillet_type)
       -- If corner k has a fillet arc, append it
       local arc = fillet_arcs[k]
       if arc ~= nil then
-         WriteDebugLog(string.format('FILLET ARC k=%d: start=(%.4f, %.4f), end=(%.4f, %.4f), bulge=%.4f',
+         WriteDebugLog(string.format("FILLET ARC k=%d: start=(%.4f, %.4f), end=(%.4f, %.4f), bulge=%.4f",
             k, arc.start_pt.x, arc.start_pt.y, arc.end_pt.x, arc.end_pt.y, arc.bulge))
          new_contour:ArcTo(arc.end_pt, arc.bulge)
       end
@@ -1705,7 +1771,7 @@ function OnLuaButton_ApplyFilletButton(dialog)
 
       WriteDebugLog('ProcessTargets: processing ' .. tostring(#target_list) .. ' target(s). ActiveSheetIndex: ' .. tostring(job.LayerManager.ActiveSheetIndex))
       for idx, item in ipairs(target_list) do
-         local filleted_ctr, corners = FilletSingleContour(item.contour, radius, fillet_type)
+         local filleted_ctr, corners = FilletSingleContour(item.contour, radius, fillet_type, g_options.tboneDirection)
          local layer_name = item.layer and item.layer.Name or "unknown"
          WriteDebugLog("Item " .. idx .. " [" .. layer_name .. "]: orig_Count=" .. tostring(item.contour and item.contour.Count) .. ", corners=" .. tostring(corners) .. ", new_Count=" .. tostring(filleted_ctr and filleted_ctr.Count) .. ", IsClosed=" .. tostring(filleted_ctr and filleted_ctr.IsClosed))
          if corners > 0 and filleted_ctr ~= nil then
@@ -1931,6 +1997,7 @@ function DisplayDialog(script_path, job)
    dialog:AddCheckBox("FilletReplaceOriginalCheck", g_options.filletReplaceOriginal)
    dialog:AddTextField("FilletOutputLayerEdit", g_options.filletOutputLayer)
    dialog:AddRadioGroup("FilletTypeRadio", g_options.filletType)
+   dialog:AddRadioGroup("TBoneDirectionRadio", g_options.tboneDirection or 1)
    dialog:AddRadioGroup("FilletScopeRadio", g_options.filletScope)
    dialog:AddRadioGroup("FilletLayerModeRadio", g_options.filletLayerMode)
 
