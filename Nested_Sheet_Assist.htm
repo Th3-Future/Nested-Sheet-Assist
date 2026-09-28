@@ -11,9 +11,54 @@ body { background-color: #F0F0F0; font-family: Arial, Helvetica, sans-serif; fon
 .HelpText { color: #555; font-size: 11px; margin-bottom: 8px; }
 .ModeBox { background-color: #ffffff; border: 1px solid #ccc; border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
 .SheetItem { padding: 3px 2px; border-bottom: 1px solid #eee; font-size: 11px; }
+
+/* Tab Bar Styles */
+.TabBar { border-bottom: 2px solid #1b365d; margin-bottom: 10px; padding-left: 4px; }
+.TabButton {
+  background-color: #e0e0e0;
+  border: 1px solid #ccc;
+  border-bottom: none;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: bold;
+  color: #555;
+  cursor: pointer;
+  display: inline-block;
+  margin-right: 4px;
+  outline: none;
+}
+.TabButton.active {
+  background-color: #1b365d;
+  color: #ffffff;
+  border-color: #1b365d;
+}
+.TabContent { display: none; }
+.TabContent.active { display: block; }
 </style>
 <title>Nested Sheet Assist</title>
 <script type="text/javascript">
+function SwitchTab(tabId) {
+  var contents = document.getElementsByClassName("TabContent");
+  for (var i = 0; i < contents.length; i++) {
+    contents[i].className = "TabContent";
+  }
+  var buttons = document.getElementsByClassName("TabButton");
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].className = "TabButton";
+  }
+
+  var activeContent = document.getElementById(tabId);
+  if (activeContent) {
+    activeContent.className = "TabContent active";
+  }
+  var activeBtn = document.getElementById("btn_" + tabId);
+  if (activeBtn) {
+    activeBtn.className = "TabButton active";
+  }
+}
+
 function OnToggleActiveSheet() {
   var chk = document.getElementById("UseActiveSheetCheck");
   var btn = document.getElementById("ChooseTemplateFileButton");
@@ -158,121 +203,225 @@ window.onfocus = function() {
     <td style="padding-bottom: 4px;">
       <h2 style="margin:0; color: #1b365d; font-size: 16px;">Nested Sheet Assist</h2>
       <p class="HelpText">
-        Apply toolpaths across all nested sheets, export ATC-compatible NC files per sheet, and generate combined Job Setup Sheets in PDF format.
+        Multi-Sheet Toolpath Synchronization, ATC NC Export, Job Setup PDF, and Auto Corner Filleting (T-Bone / Dog-Bone).
       </p>
-      <hr style="border:0; border-top: 1px solid #ccc;">
     </td>
   </tr>
 </table>
 
-<!-- Source Selection Mode Box -->
-<div class="ModeBox">
-  <div style="line-height: 22px;">
-    <input type="checkbox" CLASS="LuaButton" id="UseActiveSheetCheck" name="UseActiveSheetCheck" onclick="OnToggleActiveSheet();" style="vertical-align: middle; margin: 0 4px 0 0;" />
-    <span style="font-weight: bold; font-size: 12px; color: #1b365d; vertical-align: middle;">Use Active Sheet's Toolpaths</span>
-    <span style="font-size: 11px; color: #666; margin-left: 6px; vertical-align: middle;">(Copies toolpaths from active sheet across all sheets)</span>
-  </div>
-  <div id="VisibleOnlyRow" style="margin-left: 20px; margin-top: 4px; line-height: 20px;">
-    <input type="checkbox" CLASS="LuaButton" id="OnlyVisibleToolpathsCheck" name="OnlyVisibleToolpathsCheck" style="vertical-align: middle; margin: 0 4px 0 0;" />
-    <span style="font-size: 11px; color: #333; font-weight: bold; vertical-align: middle;">Only copy visible (checked) toolpaths</span>
-    <span style="font-size: 11px; color: #777; margin-left: 6px; vertical-align: middle;">(Uncheck to copy all toolpaths on active sheet)</span>
-  </div>
+<!-- TAB NAVIGATION BAR -->
+<div class="TabBar">
+  <button type="button" id="btn_TabToolpaths" class="TabButton active" onclick="SwitchTab('TabToolpaths');">Toolpaths &amp; ATC Export</button>
+  <button type="button" id="btn_TabFillet" class="TabButton" onclick="SwitchTab('TabFillet');">&#9881; Auto Fillet (T-Bone / Dog-Bone)</button>
 </div>
 
-<table width="100%" border="0" cellpadding="4" cellspacing="0">
-  <tr id="TemplateRow">
-    <td width="20%" class="FieldLabel" id="TemplateLabelCell">Template File:</td>
-    <td width="60%">
-      <div class="PathBox"><span id="TemplateFileNameLabel">(No template selected)</span></div>
-    </td>
-    <td width="20%">
-      <input type="button" CLASS="LuaButton" id="ChooseTemplateFileButton" name="ChooseTemplateFileButton" value="Select Template..." style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 28px; cursor: pointer;" />
-    </td>
-  </tr>
-  <tr>
-    <td class="FieldLabel">Post Processor:</td>
-    <td>
-      <select id="PostNameSelector" style="width: 100%; height: 26px; font-size: 12px;"></select>
-    </td>
-    <td></td>
-  </tr>
-  <tr>
-    <td class="FieldLabel">Output Folder:</td>
-    <td>
-      <input type="text" id="PostOutputFolderEdit" name="PostOutputFolderEdit" style="width: 100%; height: 24px;" />
-    </td>
-    <td>
-      <input type="button" CLASS="DirectoryPicker" id="ChooseDirButton" name="ChooseDirButton" value="Browse Folder..." style="height:28px; width:100%; font-weight:bold; cursor:pointer;" />
-    </td>
-  </tr>
-</table>
+<!-- ========================================================================= -->
+<!-- TAB 1: TOOLPATHS & ATC EXPORT                                             -->
+<!-- ========================================================================= -->
+<div id="TabToolpaths" class="TabContent active">
 
-<!-- Job Setup Sheet Section -->
-<div class="ModeBox" style="margin-top: 8px;">
-  <table width="100%" border="0" cellpadding="2" cellspacing="0">
+  <!-- Source Selection Mode Box -->
+  <div class="ModeBox">
+    <div style="line-height: 22px;">
+      <input type="checkbox" CLASS="LuaButton" id="UseActiveSheetCheck" name="UseActiveSheetCheck" onclick="OnToggleActiveSheet();" style="vertical-align: middle; margin: 0 4px 0 0;" />
+      <span style="font-weight: bold; font-size: 12px; color: #1b365d; vertical-align: middle;">Use Active Sheet's Toolpaths</span>
+      <span style="font-size: 11px; color: #666; margin-left: 6px; vertical-align: middle;">(Copies toolpaths from active sheet across all sheets)</span>
+    </div>
+    <div id="VisibleOnlyRow" style="margin-left: 20px; margin-top: 4px; line-height: 20px;">
+      <input type="checkbox" CLASS="LuaButton" id="OnlyVisibleToolpathsCheck" name="OnlyVisibleToolpathsCheck" style="vertical-align: middle; margin: 0 4px 0 0;" />
+      <span style="font-size: 11px; color: #333; font-weight: bold; vertical-align: middle;">Only copy visible (checked) toolpaths</span>
+      <span style="font-size: 11px; color: #777; margin-left: 6px; vertical-align: middle;">(Uncheck to copy all toolpaths on active sheet)</span>
+    </div>
+  </div>
+
+  <table width="100%" border="0" cellpadding="4" cellspacing="0">
+    <tr id="TemplateRow">
+      <td width="20%" class="FieldLabel" id="TemplateLabelCell">Template File:</td>
+      <td width="60%">
+        <div class="PathBox"><span id="TemplateFileNameLabel">(No template selected)</span></div>
+      </td>
+      <td width="20%">
+        <input type="button" CLASS="LuaButton" id="ChooseTemplateFileButton" name="ChooseTemplateFileButton" value="Select Template..." style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 28px; cursor: pointer;" />
+      </td>
+    </tr>
     <tr>
-      <td width="54%">
-        <div style="font-weight: bold; font-size: 12px; color: #1b365d;">Job Setup Report (PDF)</div>
-        <div id="SelectedSheetsSummary" style="font-size: 11px; color: #555; margin-top: 3px;">
-          Included Sheets: All sheets selected
-        </div>
+      <td class="FieldLabel">Post Processor:</td>
+      <td>
+        <select id="PostNameSelector" style="width: 100%; height: 26px; font-size: 12px;"></select>
       </td>
-      <td width="22%" style="padding-right: 4px;">
-        <input type="button" id="SelectSheetsModalBtn" value="Select Sheets..." onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; border: 1px solid #777; background: #fff; border-radius: 3px;" />
+      <td></td>
+    </tr>
+    <tr>
+      <td class="FieldLabel">Output Folder:</td>
+      <td>
+        <input type="text" id="PostOutputFolderEdit" name="PostOutputFolderEdit" style="width: 100%; height: 24px;" />
       </td>
-      <td width="24%">
-        <input type="button" CLASS="LuaButton" id="ExportJobReportButton" name="ExportJobReportButton" value="Export Job Report (PDF)" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; background-color: #1976d2; color: white; border: 1px solid #0d47a1; border-radius: 3px;" />
+      <td>
+        <input type="button" CLASS="DirectoryPicker" id="ChooseDirButton" name="ChooseDirButton" value="Browse Folder..." style="height:28px; width:100%; font-weight:bold; cursor:pointer;" />
       </td>
     </tr>
   </table>
 
-  <!-- Inline Sheet Selection Drawer -->
-  <div id="SheetSelectionDrawer" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc;">
-    <div style="margin-bottom: 6px; font-size: 11px;">
-      <span style="font-weight: bold; color: #1b365d;">Check sheets to export:</span>
-      <span style="float: right;">
-        <span onclick="SetAllSheets(true);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Select All</span> &nbsp;|&nbsp;
-        <span onclick="SetAllSheets(false);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Deselect All</span>
-      </span>
-      <div style="clear: both;"></div>
-    </div>
-    <div id="SheetCheckboxesContainer" style="max-height: 140px; overflow-y: auto; border: 1px solid #ccc; padding: 4px 6px; background: #fafafa; border-radius: 3px; margin-bottom: 6px;">
-      <!-- Populated dynamically -->
-    </div>
-    <div align="right">
-      <input type="button" value="Done" onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 70px; height: 24px; cursor: pointer; background-color: #1b365d; color: white; border: 1px solid #0f2442; border-radius: 3px; font-size: 11px;" />
+  <!-- Job Setup Sheet Section -->
+  <div class="ModeBox" style="margin-top: 8px;">
+    <table width="100%" border="0" cellpadding="2" cellspacing="0">
+      <tr>
+        <td width="54%">
+          <div style="font-weight: bold; font-size: 12px; color: #1b365d;">Job Setup Report (PDF)</div>
+          <div id="SelectedSheetsSummary" style="font-size: 11px; color: #555; margin-top: 3px;">
+            Included Sheets: All sheets selected
+          </div>
+        </td>
+        <td width="22%" style="padding-right: 4px;">
+          <input type="button" id="SelectSheetsModalBtn" value="Select Sheets..." onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; border: 1px solid #777; background: #fff; border-radius: 3px;" />
+        </td>
+        <td width="24%">
+          <input type="button" CLASS="LuaButton" id="ExportJobReportButton" name="ExportJobReportButton" value="Export Job Report (PDF)" style="font-weight: bold; width: 100%; height: 30px; cursor: pointer; background-color: #1976d2; color: white; border: 1px solid #0d47a1; border-radius: 3px;" />
+        </td>
+      </tr>
+    </table>
+
+    <!-- Inline Sheet Selection Drawer -->
+    <div id="SheetSelectionDrawer" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc;">
+      <div style="margin-bottom: 6px; font-size: 11px;">
+        <span style="font-weight: bold; color: #1b365d;">Check sheets to export:</span>
+        <span style="float: right;">
+          <span onclick="SetAllSheets(true);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Select All</span> &nbsp;|&nbsp;
+          <span onclick="SetAllSheets(false);" style="color: #0b4a99; font-weight: bold; cursor: pointer; text-decoration: underline;">Deselect All</span>
+        </span>
+        <div style="clear: both;"></div>
+      </div>
+      <div id="SheetCheckboxesContainer" style="max-height: 140px; overflow-y: auto; border: 1px solid #ccc; padding: 4px 6px; background: #fafafa; border-radius: 3px; margin-bottom: 6px;">
+        <!-- Populated dynamically -->
+      </div>
+      <div align="right">
+        <input type="button" value="Done" onclick="ToggleSheetDrawer();" style="font-weight: bold; width: 70px; height: 24px; cursor: pointer; background-color: #1b365d; color: white; border: 1px solid #0f2442; border-radius: 3px; font-size: 11px;" />
+      </div>
     </div>
   </div>
+
+  <hr style="border:0; border-top: 1px solid #ccc; margin: 10px 0;">
+
+  <table width="100%" border="0" cellpadding="4" cellspacing="0">
+    <tr>
+      <td width="33%">
+        <input type="button" CLASS="LuaButton" id="ApplyOnlyButton" name="ApplyOnlyButton" value="1. Apply to All Sheets" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#f5f5f5; border:1px solid #888; color:#111;" />
+      </td>
+      <td width="33%">
+        <input type="button" CLASS="LuaButton" id="SaveOnlyButton" name="SaveOnlyButton" value="2. Save Toolpaths (ATC)" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#e8f4fd; border:1px solid #2b78e4; color:#0b4a99;" />
+      </td>
+      <td width="34%">
+        <input type="button" CLASS="LuaButton" id="ApplyAndSaveButton" name="ApplyAndSaveButton" value="3. Apply & Save All" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#2b78e4; border:1px solid #1a56a4; color:white;" />
+      </td>
+    </tr>
+  </table>
+
 </div>
 
-<hr style="border:0; border-top: 1px solid #ccc; margin: 10px 0;">
+<!-- ========================================================================= -->
+<!-- TAB 2: AUTO FILLET (T-BONE / DOG-BONE)                                    -->
+<!-- ========================================================================= -->
+<div id="TabFillet" class="TabContent">
 
-<table width="100%" border="0" cellpadding="4" cellspacing="0">
+  <div class="ModeBox">
+    <div style="font-weight: bold; font-size: 13px; color: #1b365d; margin-bottom: 4px;">
+      Automatic Internal Corner Filleting
+    </div>
+    <div class="HelpText" style="margin-bottom: 0;">
+      Automatically detect and create CNC tool clearance fillets on all internal corners without manually selecting corners one by one. Creates clean geometry ready for profiling or pocketing.
+    </div>
+  </div>
+
+  <table width="100%" border="0" cellpadding="5" cellspacing="0" style="background:#fff; border:1px solid #ccc; border-radius:4px; padding:8px; margin-bottom:8px;">
+    <tr>
+      <td width="25%" class="FieldLabel">Tool Diameter:</td>
+      <td width="35%">
+        <input type="text" id="FilletToolDiamEdit" name="FilletToolDiamEdit" style="width: 100px; height: 24px; font-weight: bold;" />
+      </td>
+      <td width="40%" style="font-size: 11px; color: #666;">
+        (Diameter of CNC end mill, e.g. 0.25 or 6.0)
+      </td>
+    </tr>
+    <tr>
+      <td class="FieldLabel">Fillet Type:</td>
+      <td colspan="2">
+        <label style="cursor: pointer; margin-right: 20px; font-weight: bold;">
+          <input type="radio" class="LuaButton" name="FilletTypeRadio" id="FilletTypeRadio_1" value="1" style="vertical-align: middle; margin-right: 4px;" />
+          T-Bone Fillet <span style="font-weight:normal; color:#555;">(Extends along longest edge - cleanest fit)</span>
+        </label>
+        <br />
+        <label style="cursor: pointer; margin-top: 4px; display: inline-block; font-weight: bold;">
+          <input type="radio" class="LuaButton" name="FilletTypeRadio" id="FilletTypeRadio_2" value="2" style="vertical-align: middle; margin-right: 4px;" />
+          Dog-Bone Fillet <span style="font-weight:normal; color:#555;">(Extends 45&deg; along corner bisector)</span>
+        </label>
+      </td>
+    </tr>
+    <tr>
+      <td class="FieldLabel">Allowance / Oversize:</td>
+      <td>
+        <input type="text" id="FilletAllowanceEdit" name="FilletAllowanceEdit" style="width: 100px; height: 24px;" />
+      </td>
+      <td style="font-size: 11px; color: #666;">
+        (Extra clearance offset, default: 0.0)
+      </td>
+    </tr>
+    <tr>
+      <td class="FieldLabel">Output Layer Name:</td>
+      <td>
+        <input type="text" id="FilletOutputLayerEdit" name="FilletOutputLayerEdit" style="width: 180px; height: 24px;" />
+      </td>
+      <td style="font-size: 11px; color: #666;">
+        (New layer for filleted vectors)
+      </td>
+    </tr>
+    <tr>
+      <td class="FieldLabel">Target Scope:</td>
+      <td colspan="2">
+        <label style="cursor: pointer; margin-right: 16px;">
+          <input type="radio" class="LuaButton" name="FilletScopeRadio" id="FilletScopeRadio_1" value="1" style="vertical-align: middle; margin-right: 4px;" />
+          <b>Selected Vectors Only</b> <span style="color:#666;">(Active Sheet)</span>
+        </label>
+        <label style="cursor: pointer; margin-right: 16px;">
+          <input type="radio" class="LuaButton" name="FilletScopeRadio" id="FilletScopeRadio_2" value="2" style="vertical-align: middle; margin-right: 4px;" />
+          <b>All Closed Vectors on Active Sheet</b>
+        </label>
+        <label style="cursor: pointer;">
+          <input type="radio" class="LuaButton" name="FilletScopeRadio" id="FilletScopeRadio_3" value="3" style="vertical-align: middle; margin-right: 4px;" />
+          <b>All Sheets in Job</b>
+        </label>
+      </td>
+    </tr>
+  </table>
+
+  <table width="100%" border="0" cellpadding="4" cellspacing="0" style="margin-top: 6px;">
+    <tr>
+      <td width="50%">
+        <input type="button" CLASS="LuaButton" id="ApplyFilletButton" name="ApplyFilletButton" value="&#9881; Apply Fillets Directly (One-Click)" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#2b78e4; border:1px solid #1a56a4; color:white;" />
+      </td>
+      <td width="50%">
+        <input type="button" CLASS="LuaButton" id="CreateFilletMarkersButton" name="CreateFilletMarkersButton" value="Preview / Create Markers Only" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#f5f5f5; border:1px solid #888; color:#222;" />
+      </td>
+    </tr>
+  </table>
+
+</div>
+
+<!-- Common Footer & Activity Log -->
+<div style="margin-top: 10px;">
+  <div style="font-weight:bold; font-size:11px; color:#444; margin-bottom: 3px;">Activity &amp; Status Log:</div>
+  <textarea id="StatusLogLabel" name="StatusLogLabel" readonly style="background-color: #ffffff; color: #222222; font-family: Consolas, 'Courier New', monospace; font-size: 11px; padding: 6px; border: 1px solid #bbb; border-radius: 3px; width: 100%; height: 115px; box-sizing: border-box; resize: none; overflow-y: scroll; line-height: 1.4;">Ready. Select a template, apply toolpaths, or switch to Auto Fillet tab.</textarea>
+</div>
+
+<table width="100%" border="0" cellpadding="4" cellspacing="0" style="margin-top: 4px;">
   <tr>
-    <td width="33%">
-      <input type="button" CLASS="LuaButton" id="ApplyOnlyButton" name="ApplyOnlyButton" value="1. Apply to All Sheets" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#f5f5f5; border:1px solid #888; color:#111;" />
-    </td>
-    <td width="33%">
-      <input type="button" CLASS="LuaButton" id="SaveOnlyButton" name="SaveOnlyButton" value="2. Save Toolpaths (ATC)" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#e8f4fd; border:1px solid #2b78e4; color:#0b4a99;" />
-    </td>
-    <td width="34%">
-      <input type="button" CLASS="LuaButton" id="ApplyAndSaveButton" name="ApplyAndSaveButton" value="3. Apply & Save All" style="font-weight: bold; width: 100%; font-family: Arial, Helvetica, sans-serif; font-size: 12px; height: 38px; cursor: pointer; border-radius: 4px; background-color:#2b78e4; border:1px solid #1a56a4; color:white;" />
-    </td>
-  </tr>
-  <tr>
-    <td colspan="3" align="center" style="padding-top: 8px; padding-bottom: 4px;">
-      <input class="FormButton" type="button" id="ButtonCancel" name="ButtonCancel" value="Close" onclick="window.close();" style="width: 120px; height: 30px; cursor: pointer;" />
+    <td align="center">
+      <input class="FormButton" type="button" id="ButtonCancel" name="ButtonCancel" value="Close" onclick="window.close();" style="width: 120px; height: 28px; cursor: pointer;" />
     </td>
   </tr>
 </table>
 
-<div style="margin-top: 6px;">
-  <div style="font-weight:bold; font-size:11px; color:#444; margin-bottom: 3px;">Activity & Status Log:</div>
-  <textarea id="StatusLogLabel" name="StatusLogLabel" readonly style="background-color: #ffffff; color: #222222; font-family: Consolas, 'Courier New', monospace; font-size: 11px; padding: 6px; border: 1px solid #bbb; border-radius: 3px; width: 100%; height: 125px; box-sizing: border-box; resize: none; overflow-y: scroll; line-height: 1.4;">Ready. Select a template, apply toolpaths, or export Job Report PDF.</textarea>
-</div>
-
-<div align="right" style="color: #999; font-size: 10px; margin-top: 6px;">
-  Nested Sheet Assist &bull; Version <span id="GadgetVersion">1.0</span>
+<div align="right" style="color: #999; font-size: 10px; margin-top: 4px;">
+  Nested Sheet Assist &bull; Version <span id="GadgetVersion">1.1</span>
 </div>
 
 </body>

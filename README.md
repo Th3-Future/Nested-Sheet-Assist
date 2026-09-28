@@ -1,4 +1,4 @@
-﻿# Nested Sheet Assist for Vectric VCarve Pro & Aspire
+# Nested Sheet Assist for Vectric VCarve Pro & Aspire
 
 [![Vectric V12+](https://img.shields.io/badge/Vectric-VCarve%20Pro%20%7C%20Aspire%20v12%2B-blue.svg)](https://www.vectric.com)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](https://www.microsoft.com)
@@ -11,6 +11,7 @@ A high-performance productivity gadget for **Vectric VCarve Pro & Aspire (v12.0 
 2. **Automated Toolpath Synchronization via Toolpath Templates (`.vtpt`)**: Automatically loads an external toolpath template file (`.vtpt`) and distributes/recalculates toolpaths across every nested sheet in the job (surpassing standard VCarve's limitation of only applying templates to the active sheet).
 3. **Batch ATC NC File Export**: Automatically detects toolpaths on each sheet and exports separate, organized, machine-ready G-code/NC files per sheet using your active ATC Post Processor (`<JobName> - <SheetName>.<ext>`).
 4. **Multi-Sheet Job Setup Sheet PDF Compiler**: Compiles an interactive, unified multi-page vector PDF report for **all sheets** or **selected sheets** only, with maximized part visibility on Page 1 (90vh) and clean toolpath specifications on Page 2 (zero orphan/empty pages).
+5. **Automatic Internal Corner Filleting (T-Bone & Dog-Bone)**: Automatically detects all internal 90° and sharp corners across selected vectors, active sheets, or all nested sheets, generating CNC clearance fillets in a single click without manually picking corners one by one.
 
 ---
 
@@ -35,6 +36,13 @@ In standard Vectric software, loading a toolpath template (`.vtpt`) only applies
   - **Page 2**: Material setup summary and individual toolpath specifications (feed rate, plunge, spindle speed, tool numbers, notes).
   - **Zero Orphan Pages**: Clean CSS break rules eliminate trailing footer splits and blank pages.
 - **Fast Headless PDF Conversion**: Leverages Windows built-in Microsoft Edge headless printing engine for vector-crisp, multi-page PDF output.
+
+### 5. Automatic Internal Corner Filleting (T-Bone / Dog-Bone)
+Standard VCarve requires clicking individual corners one by one to add fillets. Nested Sheet Assist includes a dedicated **Auto Fillet** tab that:
+- **Instant Internal Corner Detection**: Scans closed contours and detects all inside sharp corners needing tool clearance.
+- **T-Bone & Dog-Bone Modes**: Choose **T-Bone** (extends along the longest edge for a discreet, flush joint fit) or **Dog-Bone** (extends 45° along the corner bisector).
+- **Flexible Scope**: Apply across **Selected Vectors**, **All Closed Vectors on Active Sheet**, or **All Sheets in Job**.
+- **One-Click Generation**: Automatically creates ready-to-cut filleted vectors on a dedicated layer (`FilletedContours`), or outputs preview markers (`FilletMarkers`) before committing.
 
 ---
 

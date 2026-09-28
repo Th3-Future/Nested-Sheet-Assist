@@ -1,4 +1,4 @@
-﻿Gadget Name: Nested Sheet Assist
-Version: 1.0
+Gadget Name: Nested Sheet Assist
+Version: 1.1
 Author: Godswill
-Description: Complete Toolpath Synchronization across nested sheets, Batch ATC NC file exporter per sheet, and interactive Job Setup Report single PDF compiler for Vectric VCarve Pro & Aspire V12.5.
+Description: Complete Toolpath Synchronization across nested sheets, Batch ATC NC file exporter per sheet, Multi-Sheet Job Setup PDF compiler, and Auto Corner Fillet (T-Bone/Dog-Bone) engine for Vectric VCarve Pro & Aspire V12.5.
