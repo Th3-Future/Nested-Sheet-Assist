@@ -1045,18 +1045,53 @@ local function SetLayerRGB(layer, r_255, g_255, b_255)
    pcall(function() layer.Colour = rgb_int end)
 end
 
--- Calculates total path length along contour from from_k up to and including to_k
-local function GetPathLengthBetweenSpans(spans, n, from_k, to_k)
+-- Measures continuous straight wall length leaving corner in step direction (-1: incoming backwards, +1: outgoing forwards)
+local function GetStraightWallLength(spans, n, start_k, step)
    local total_len = 0.0
-   local k = from_k
+   local accum_dx = 0.0
+   local accum_dy = 0.0
+   local wall_tx = nil
+   local wall_ty = nil
+   local k = start_k
+
    for step_count = 1, n do
       local s = spans[k]
       local dx = s.EndPoint2D.x - s.StartPoint2D.x
       local dy = s.EndPoint2D.y - s.StartPoint2D.y
-      total_len = total_len + math.sqrt(dx * dx + dy * dy)
-      if k == to_k then break end
-      k = (k % n) + 1
+      local slen = math.sqrt(dx * dx + dy * dy)
+
+      local v_dx = (step < 0) and -dx or dx
+      local v_dy = (step < 0) and -dy or dy
+
+      if slen > 0.0001 then
+         local tx = v_dx / slen
+         local ty = v_dy / slen
+
+         if wall_tx == nil then
+            wall_tx = tx
+            wall_ty = ty
+         else
+            local dot = tx * wall_tx + ty * wall_ty
+            -- If direction deviates by more than ~35 degrees, we have reached an internal or external corner
+            if dot < 0.80 then
+               break
+            end
+         end
+
+         total_len = total_len + slen
+         accum_dx = accum_dx + v_dx
+         accum_dy = accum_dy + v_dy
+
+         local accum_dist = math.sqrt(accum_dx * accum_dx + accum_dy * accum_dy)
+         if accum_dist > 0.001 then
+            wall_tx = accum_dx / accum_dist
+            wall_ty = accum_dy / accum_dist
+         end
+      end
+
+      k = (step < 0) and (((k - 2 + n) % n) + 1) or ((k % n) + 1)
    end
+
    return total_len
 end
 
@@ -1397,15 +1432,9 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
 
       if fillet_type == 1 then
          -- T-Bone Fillet
-         -- Measure total path length to adjacent corners along the contour
-         local idx = corner_index_pos[k]
-         local prev_idx = (idx == 1) and m_corners or (idx - 1)
-         local next_idx = (idx == m_corners) and 1 or (idx + 1)
-         local prev_k = sorted_corners[prev_idx]
-         local next_corner_k = sorted_corners[next_idx]
-
-         local len_in_total = GetPathLengthBetweenSpans(spans, n, (prev_k % n) + 1, k)
-         local len_out_total = GetPathLengthBetweenSpans(spans, n, next_k, next_corner_k)
+         -- Measure true straight wall length leaving corner (stops at any internal OR external corner)
+         local len_in_straight = GetStraightWallLength(spans, n, k, -1)
+         local len_out_straight = GetStraightWallLength(spans, n, next_k, 1)
 
          local place_on = 'in'
          if tbone_dir == 2 then
@@ -1415,7 +1444,7 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
             elseif math.abs(t_out.x) > (math.abs(t_out.y) + 0.1) then
                place_on = 'out'
             else
-               place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+               place_on = (len_in_straight >= len_out_straight) and 'in' or 'out'
             end
          elseif tbone_dir == 3 then
             -- Along Vertical Walls (Y-Axis)
@@ -1424,15 +1453,18 @@ function FilletSingleContour(contour, radius, fillet_type, tbone_dir)
             elseif math.abs(t_out.y) > (math.abs(t_out.x) + 0.1) then
                place_on = 'out'
             else
-               place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+               place_on = (len_in_straight >= len_out_straight) and 'in' or 'out'
             end
          elseif tbone_dir == 4 then
             -- Along Shorter Wall
-            place_on = (len_in_total <= len_out_total) and 'in' or 'out'
+            place_on = (len_in_straight <= len_out_straight) and 'in' or 'out'
          else
-            -- Along Longer Wall (Auto)
-            place_on = (len_in_total >= len_out_total) and 'in' or 'out'
+            -- Along Longer Wall (Auto): places on longer straight wall
+            place_on = (len_in_straight >= len_out_straight) and 'in' or 'out'
          end
+
+         WriteDebugLog(string.format("Corner k=%d: len_in_straight=%.4f, len_out_straight=%.4f => place_on=%s",
+            k, len_in_straight, len_out_straight, place_on))
 
          local cut_dist = 2.0 * radius
 
