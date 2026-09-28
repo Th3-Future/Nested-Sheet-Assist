@@ -1173,62 +1173,43 @@ function FilletSingleContour(contour, radius, fillet_type)
       return contour:Clone(), 0, {}
    end
 
-   -- Pass 1: Identify all internal sharp corners on the contour
+   -- Pass 1: Identify sharp corners strictly matching offset-detected internal corners
    local corner_info_map = {}
    local total_corners_filleted = 0
 
-   for i = 1, n do
-      local s_in = spans[i]
-      local next_k = (i % n) + 1
-      local s_out = spans[next_k]
-
-      local v = s_in.EndPoint2D
-
-      local dx_in = v.x - s_in.StartPoint2D.x
-      local dy_in = v.y - s_in.StartPoint2D.y
-      local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
-      if len_in < 0.0001 then len_in = 0.0001 end
-      local t_in = { x = dx_in / len_in, y = dy_in / len_in }
-
-      local dx_out = s_out.EndPoint2D.x - v.x
-      local dy_out = s_out.EndPoint2D.y - v.y
-      local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
-      if len_out < 0.0001 then len_out = 0.0001 end
-      local t_out = { x = dx_out / len_out, y = dy_out / len_out }
-
-      local cross = t_in.x * t_out.y - t_in.y * t_out.x
-      local dot = t_in.x * t_out.x + t_in.y * t_out.y
-
-      -- Internal corner check:
-      -- For CCW: right turn into material (cross < -0.25, |dot| < 0.75)
-      -- For CW: left turn into material (cross > 0.25, |dot| < 0.75)
-      local is_internal = false
-      if is_ccw then
-         if cross < -0.25 and math.abs(dot) < 0.75 then
-            is_internal = true
-         end
-      else
-         if cross > 0.25 and math.abs(dot) < 0.75 then
-            is_internal = true
+   for _, oc in ipairs(offset_corners) do
+      local best_k = nil
+      local best_dist_sq = (radius * 1.6) * (radius * 1.6)
+      for i = 1, n do
+         local v = spans[i].EndPoint2D
+         local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+         if dsq < best_dist_sq then
+            best_dist_sq = dsq
+            best_k = i
          end
       end
 
-      -- Proximity to detected offset center check
-      if not is_internal and #offset_corners > 0 then
-         for _, oc in ipairs(offset_corners) do
-            local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
-            if dsq < (radius * 1.6)^2 then
-               if (is_ccw and cross < -0.1) or (not is_ccw and cross > 0.1) then
-                  is_internal = true
-                  break
-               end
-            end
-         end
-      end
+      if best_k ~= nil and corner_info_map[best_k] == nil then
+         local s_in = spans[best_k]
+         local next_k = (best_k % n) + 1
+         local s_out = spans[next_k]
 
-      if is_internal then
-         corner_info_map[i] = {
-            k = i,
+         local v = s_in.EndPoint2D
+
+         local dx_in = v.x - s_in.StartPoint2D.x
+         local dy_in = v.y - s_in.StartPoint2D.y
+         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+         if len_in < 0.0001 then len_in = 0.0001 end
+         local t_in = { x = dx_in / len_in, y = dy_in / len_in }
+
+         local dx_out = s_out.EndPoint2D.x - v.x
+         local dy_out = s_out.EndPoint2D.y - v.y
+         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+         if len_out < 0.0001 then len_out = 0.0001 end
+         local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+
+         corner_info_map[best_k] = {
+            k = best_k,
             next_k = next_k,
             vertex = v,
             t_in = t_in,
@@ -1236,23 +1217,9 @@ function FilletSingleContour(contour, radius, fillet_type)
             len_in = len_in,
             len_out = len_out
          }
+         total_corners_filleted = total_corners_filleted + 1
       end
    end
-
-   -- Filter out consecutive duplicate matches
-   local filtered_corners = {}
-   for k, cinfo in pairs(corner_info_map) do
-      local prev_k = ((k - 2 + n) % n) + 1
-      if corner_info_map[prev_k] == nil then
-         filtered_corners[k] = cinfo
-      else
-         if cinfo.len_in >= corner_info_map[prev_k].len_in then
-            filtered_corners[k] = cinfo
-         end
-      end
-   end
-   corner_info_map = filtered_corners
-   for _ in pairs(corner_info_map) do total_corners_filleted = total_corners_filleted + 1 end
 
    if total_corners_filleted == 0 then
       return contour:Clone(), 0, {}
@@ -1338,7 +1305,7 @@ function FilletSingleContour(contour, radius, fillet_type)
       end
    end
 
-   -- Pass 4: Assemble new contour with 100% span preservation
+   -- Pass 4: Assemble new contour with 100% span preservation using native LineTo / ArcTo
    local new_contour = Contour(0.0)
 
    for k = 1, n do
@@ -1346,39 +1313,38 @@ function FilletSingleContour(contour, radius, fillet_type)
       local a_pt = A[k]
       local b_pt = B[k]
 
-      local orig_a = s.StartPoint2D
-      local orig_b = s.EndPoint2D
-
-      local a_moved = (a_pt.x - orig_a.x)^2 + (a_pt.y - orig_a.y)^2 > 0.000001
-      local b_moved = (b_pt.x - orig_b.x)^2 + (b_pt.y - orig_b.y)^2 > 0.000001
-
-      if not a_moved and not b_moved then
-         -- Neither endpoint was modified: preserve original geometry (arc, bezier, line) perfectly
-         new_contour:AppendSpan(CloneSpanGeometry(s))
+      if new_contour.IsEmpty then
+         new_contour:AppendPoint(a_pt)
       else
-         -- Edge adjoining a filleted corner
-         local dx = b_pt.x - a_pt.x
-         local dy = b_pt.y - a_pt.y
-         if (dx * dx + dy * dy) > 0.000001 then
-            new_contour:AppendSpan(LineSpan(a_pt, b_pt))
+         local cur_end = new_contour.EndPoint2D
+         local gap_sq = (cur_end.x - a_pt.x)^2 + (cur_end.y - a_pt.y)^2
+         if gap_sq > 0.000001 then
+            new_contour:LineTo(a_pt)
          end
+      end
+
+      local a_moved = (a_pt.x - s.StartPoint2D.x)^2 + (a_pt.y - s.StartPoint2D.y)^2 > 0.000001
+      local b_moved = (b_pt.x - s.EndPoint2D.x)^2 + (b_pt.y - s.EndPoint2D.y)^2 > 0.000001
+
+      if a_moved or b_moved or s.IsLineType then
+         new_contour:LineTo(b_pt)
+      elseif s.IsArcType then
+         local arc_sp = CastSpanToArcSpan(s)
+         new_contour:ArcTo(b_pt, arc_sp.Bulge)
+      else
+         new_contour:AppendSpan(CloneSpanGeometry(s))
       end
 
       -- If corner k has a fillet arc, append it
       local arc = fillet_arcs[k]
       if arc ~= nil then
-         new_contour:AppendSpan(ArcSpan(arc.start_pt, arc.end_pt, arc.bulge))
+         new_contour:ArcTo(arc.end_pt, arc.bulge)
       end
    end
 
    -- Ensure contour closure
    if not new_contour.IsEmpty and not new_contour.IsClosed then
-      local p_first = new_contour.StartPoint2D
-      local p_last = new_contour.EndPoint2D
-      local gap_sq = (p_first.x - p_last.x)^2 + (p_first.y - p_last.y)^2
-      if gap_sq > 0.000001 then
-         new_contour:LineTo(p_first)
-      end
+      new_contour:LineTo(new_contour.StartPoint2D)
    end
 
    -- Build corners list for markers preview compatibility
