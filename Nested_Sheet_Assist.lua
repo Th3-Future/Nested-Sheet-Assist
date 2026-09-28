@@ -1197,28 +1197,16 @@ function FilletSingleContour(contour, radius, fillet_type)
       local seg_proj = seg_dx * t_dir.x + seg_dy * t_dir.y
 
       if seg_proj > 0.001 then
-         if new_contour.IsEmpty then
-            new_contour:AppendPoint(start_pt)
-         end
          new_contour:AppendSpan(LineSpan(start_pt, end_pt))
       end
 
       if cur_c.filleted then
          if cur_c.type == 'dogbone' then
-            if new_contour.IsEmpty then
-               new_contour:AppendPoint(cur_c.p_in)
-            end
             new_contour:AppendSpan(ArcSpan(cur_c.p_in, cur_c.p_out, cur_c.bulge))
          elseif cur_c.type == 'tbone' then
             if cur_c.place_on == 'in' then
-               if new_contour.IsEmpty then
-                  new_contour:AppendPoint(cur_c.p_cut)
-               end
                new_contour:AppendSpan(ArcSpan(cur_c.p_cut, cur_c.vertex, cur_c.bulge))
             else
-               if new_contour.IsEmpty then
-                  new_contour:AppendPoint(cur_c.vertex)
-               end
                new_contour:AppendSpan(ArcSpan(cur_c.vertex, cur_c.p_cut, cur_c.bulge))
             end
          end
@@ -1363,6 +1351,26 @@ end
 -- BUTTON: Apply Fillets Directly (One-Click)
 function OnLuaButton_ApplyFilletButton(dialog)
    local job = VectricJob()
+   -- Diagnostic Test
+   pcall(function()
+      local tp1 = Point2D(0, 0)
+      local tp2 = Point2D(10, 0)
+      local tp3 = Point2D(10, 10)
+      local c1 = Contour(0.0)
+      c1:AppendSpan(LineSpan(tp1, tp2))
+      c1:AppendSpan(LineSpan(tp2, tp3))
+      WriteDebugLog('Diag Test 1 (pure AppendSpan LineSpan): Count=' .. tostring(c1.Count) .. ', IsEmpty=' .. tostring(c1.IsEmpty))
+
+      local c2 = Contour(0.0)
+      local ok_arc, arc_obj = pcall(function() return ArcSpan(tp1, tp2, 1.0) end)
+      WriteDebugLog('Diag Test 2 (ArcSpan ctor): ok=' .. tostring(ok_arc) .. ', arc_obj=' .. tostring(arc_obj))
+      if ok_arc and arc_obj ~= nil then
+         local ok_app, err_app = pcall(function() c2:AppendSpan(arc_obj) end)
+         WriteDebugLog('Diag Test 2 (AppendSpan ArcSpan): ok=' .. tostring(ok_app) .. ', Count=' .. tostring(c2.Count) .. ', err=' .. tostring(err_app))
+      end
+      WriteDebugLog('Diag Test 3 (c1.ArcTo): ' .. tostring(c1.ArcTo))
+   end)
+
    if not job.Exists then
       LogMsg(dialog, 'Error: No active job found.')
       MessageBox('No active job found.')
@@ -1401,19 +1409,28 @@ function OnLuaButton_ApplyFilletButton(dialog)
       local sheet_parts = 0
       local new_selected = {}
 
-      for _, item in ipairs(target_list) do
+      WriteDebugLog('ProcessTargets: processing ' .. tostring(#target_list) .. ' target(s). ActiveSheetIndex: ' .. tostring(job.LayerManager.ActiveSheetIndex))
+      for idx, item in ipairs(target_list) do
          local filleted_ctr, corners = FilletSingleContour(item.contour, radius, fillet_type)
+         WriteDebugLog('Item ' .. idx .. ': SheetIndex=' .. tostring(item.sheet_index) .. ', corners=' .. tostring(corners) .. ', filleted_ctr.Count=' .. tostring(filleted_ctr and filleted_ctr.Count) .. ', IsClosed=' .. tostring(filleted_ctr and filleted_ctr.IsClosed) .. ', IsEmpty=' .. tostring(filleted_ctr and filleted_ctr.IsEmpty))
          if corners > 0 and filleted_ctr ~= nil then
             sheet_corners = sheet_corners + corners
             sheet_parts = sheet_parts + 1
 
+            if item.sheet_index ~= nil then
+               job.LayerManager.ActiveSheetIndex = item.sheet_index
+            end
             local new_cad = CreateCadContour(filleted_ctr)
+            WriteDebugLog('Item ' .. idx .. ': new_cad=' .. tostring(new_cad ~= nil) .. ', filleted_ctr.Count=' .. tostring(filleted_ctr.Count))
             if replace_orig and item.layer ~= nil then
-               item.layer:RemoveObject(item.cad_obj)
-               item.layer:AddObject(new_cad, true)
+               local rem_ok = item.layer:RemoveObject(item.cad_obj)
+               local add_ok = item.layer:AddObject(new_cad, true)
+               WriteDebugLog('Item ' .. idx .. ': in-place replace on ' .. item.layer.Name .. ' rem=' .. tostring(rem_ok) .. ' add=' .. tostring(add_ok))
             else
                local out_layer = job.LayerManager:GetLayerWithName(g_options.filletOutputLayer)
-               out_layer:AddObject(new_cad, true)
+               out_layer.Visible = true
+               local add_ok = out_layer:AddObject(new_cad, true)
+               WriteDebugLog('Item ' .. idx .. ': added to ' .. out_layer.Name .. ' add=' .. tostring(add_ok) .. ', layer.Count=' .. tostring(out_layer.Count))
             end
 
             table.insert(new_selected, new_cad)
