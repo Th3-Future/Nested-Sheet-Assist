@@ -1164,163 +1164,178 @@ function FilletSingleContour(contour, radius, fillet_type)
    end
 
    local is_ccw = contour.IsCCW
-   -- For T-bone semicircle:
-   -- When extending along incoming edge (direction t_in) from P_cut to V:
-   -- For CCW: material is to the left of t_in -> positive bulge (+1.0) curves into wall
-   -- For CW: material is to the right of t_in -> negative bulge (-1.0) curves into wall
-   local bulge_sign = is_ccw and 1.0 or -1.0
 
    -- Run offset-based detection to find internal sharp corners
    local offset_corners = DetectCornersViaOffset(contour, radius)
    WriteDebugLog("FilletSingleContour: n=" .. n .. ", is_ccw=" .. tostring(is_ccw) .. ", offset_corners=" .. tostring(#offset_corners))
 
-   local corners = {}
+   if #offset_corners == 0 then
+      return contour:Clone(), 0, {}
+   end
+
+   -- Pass 1: Map each detected offset corner to the single closest vertex on the contour
+   -- Each offset corner claims at most ONE unique vertex within 0.08"
+   local corner_info_map = {}
    local total_corners_filleted = 0
 
-   for i = 1, n do
-      local s_in = spans[i]
-      local next_idx = (i % n) + 1
-      local s_out = spans[next_idx]
-
-      local v = s_in.EndPoint2D
-
-      local dx_in = v.x - s_in.StartPoint2D.x
-      local dy_in = v.y - s_in.StartPoint2D.y
-      local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
-      if len_in < 0.0001 then len_in = 0.0001 end
-      local t_in = { x = dx_in / len_in, y = dy_in / len_in }
-
-      local dx_out = s_out.EndPoint2D.x - v.x
-      local dy_out = s_out.EndPoint2D.y - v.y
-      local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
-      if len_out < 0.0001 then len_out = 0.0001 end
-      local t_out = { x = dx_out / len_out, y = dy_out / len_out }
-
-      local cross, dot, angle = GetTurnInfo(t_in, t_out)
-
-      -- Check if vertex matches any corner identified by offset kernel
-      local matched_offset = false
-      for _, oc in ipairs(offset_corners) do
-         local dist_sq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
-         if dist_sq < 0.0025 then -- within 0.05 inches
-            matched_offset = true
-            break
+   for _, oc in ipairs(offset_corners) do
+      local best_k = nil
+      local best_dist_sq = 0.0064 -- (0.08 inches)^2
+      for i = 1, n do
+         local v = spans[i].EndPoint2D
+         local dsq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
+         if dsq < best_dist_sq then
+            best_dist_sq = dsq
+            best_k = i
          end
       end
 
-      local is_internal = matched_offset or IsInternalCorner(is_ccw, cross, dot, angle)
+      if best_k ~= nil and corner_info_map[best_k] == nil then
+         local s_in = spans[best_k]
+         local next_k = (best_k % n) + 1
+         local s_out = spans[next_k]
 
-      local filleted = false
-      local corner_info = { filleted = false, vertex = v }
+         local v = s_in.EndPoint2D
 
-      if is_internal then
-         if fillet_type == 1 then
-            -- T-Bone Fillet: place on longer span to keep mating edge flat
-            local place_on = (len_in >= len_out) and 'in' or 'out'
+         local dx_in = v.x - s_in.StartPoint2D.x
+         local dy_in = v.y - s_in.StartPoint2D.y
+         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+         if len_in < 0.0001 then len_in = 0.0001 end
+         local t_in = { x = dx_in / len_in, y = dy_in / len_in }
 
-            if place_on == 'in' then
-               filleted = true
-               corner_info = {
-                  filleted = true,
-                  type = 'tbone',
-                  place_on = 'in',
-                  p_cut = Point2D(v.x - 2.0 * radius * t_in.x, v.y - 2.0 * radius * t_in.y),
-                  vertex = v,
-                  bulge = bulge_sign * 1.0
-               }
-            else
-               filleted = true
-               corner_info = {
-                  filleted = true,
-                  type = 'tbone',
-                  place_on = 'out',
-                  vertex = v,
-                  p_cut = Point2D(v.x + 2.0 * radius * t_out.x, v.y + 2.0 * radius * t_out.y),
-                  bulge = bulge_sign * 1.0
-               }
-            end
-         else
-            -- Dog-Bone Fillet: 45 degree extension
-            local d = radius
-            filleted = true
-            corner_info = {
-               filleted = true,
-               type = 'dogbone',
-               p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y),
-               p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y),
-               vertex = v,
-               bulge = bulge_sign * 2.41421356
-            }
-         end
-      end
+         local dx_out = s_out.EndPoint2D.x - v.x
+         local dy_out = s_out.EndPoint2D.y - v.y
+         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+         if len_out < 0.0001 then len_out = 0.0001 end
+         local t_out = { x = dx_out / len_out, y = dy_out / len_out }
 
-      if filleted then
+         corner_info_map[best_k] = {
+            k = best_k,
+            next_k = next_k,
+            vertex = v,
+            t_in = t_in,
+            t_out = t_out,
+            len_in = len_in,
+            len_out = len_out
+         }
          total_corners_filleted = total_corners_filleted + 1
       end
-      corners[i] = corner_info
    end
 
    if total_corners_filleted == 0 then
-      return contour:Clone(), 0, corners
+      return contour:Clone(), 0, {}
    end
 
+   WriteDebugLog("FilletSingleContour: matched " .. total_corners_filleted .. " unique corner vertices on contour")
+
+   -- Pass 2: Initialize start point (A_k) and end point (B_k) for all spans
+   local A = {}
+   local B = {}
+   for k = 1, n do
+      A[k] = Point2D(spans[k].StartPoint2D.x, spans[k].StartPoint2D.y)
+      B[k] = Point2D(spans[k].EndPoint2D.x, spans[k].EndPoint2D.y)
+   end
+
+   -- Pass 3: Calculate fillet geometry and trim endpoints A and B
+   local fillet_arcs = {}
+   local bulge_sign = is_ccw and 1.0 or -1.0
+
+   for k, cinfo in pairs(corner_info_map) do
+      local v = cinfo.vertex
+      local t_in = cinfo.t_in
+      local t_out = cinfo.t_out
+      local next_k = cinfo.next_k
+
+      if fillet_type == 1 then
+         -- T-Bone Fillet: place on longer span to keep mating edge flat
+         local place_on = (cinfo.len_in >= cinfo.len_out) and 'in' or 'out'
+         local cut_dist = 2.0 * radius
+
+         if place_on == 'in' then
+            if cut_dist > cinfo.len_in * 0.9 and cinfo.len_out > cinfo.len_in then
+               place_on = 'out'
+            else
+               cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
+            end
+         end
+         if place_on == 'out' then
+            if cut_dist > cinfo.len_out * 0.9 and cinfo.len_in > cinfo.len_out then
+               place_on = 'in'
+               cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
+            else
+               cut_dist = math.min(cut_dist, cinfo.len_out * 0.9)
+            end
+         end
+
+         local bulge = bulge_sign * 1.0
+
+         if place_on == 'in' then
+            local p_cut = Point2D(v.x - cut_dist * t_in.x, v.y - cut_dist * t_in.y)
+            B[k] = p_cut
+            fillet_arcs[k] = {
+               start_pt = p_cut,
+               end_pt = v,
+               bulge = bulge
+            }
+         else
+            local p_cut = Point2D(v.x + cut_dist * t_out.x, v.y + cut_dist * t_out.y)
+            A[next_k] = p_cut
+            fillet_arcs[k] = {
+               start_pt = v,
+               end_pt = p_cut,
+               bulge = bulge
+            }
+         end
+      else
+         -- Dog-Bone Fillet: 45 degree extension
+         local d = radius
+         if d > cinfo.len_in * 0.45 then d = cinfo.len_in * 0.45 end
+         if d > cinfo.len_out * 0.45 then d = cinfo.len_out * 0.45 end
+
+         local p_in = Point2D(v.x - d * t_in.x, v.y - d * t_in.y)
+         local p_out = Point2D(v.x + d * t_out.x, v.y + d * t_out.y)
+         B[k] = p_in
+         A[next_k] = p_out
+
+         local bulge = bulge_sign * 2.41421356
+         fillet_arcs[k] = {
+            start_pt = p_in,
+            end_pt = p_out,
+            bulge = bulge
+         }
+      end
+   end
+
+   -- Pass 4: Assemble new contour with 100% span preservation
    local new_contour = Contour(0.0)
 
    for k = 1, n do
-      local prev_corner_idx = ((k - 2 + n) % n) + 1
-      local prev_c = corners[prev_corner_idx]
-      local cur_c = corners[k]
       local s = spans[k]
+      local a_pt = A[k]
+      local b_pt = B[k]
 
-      if not prev_c.filleted and not cur_c.filleted then
-         -- Neither endpoint is modified: preserve original geometry (arc, bezier, line) perfectly
+      local orig_a = s.StartPoint2D
+      local orig_b = s.EndPoint2D
+
+      local a_moved = (a_pt.x - orig_a.x)^2 + (a_pt.y - orig_a.y)^2 > 0.000001
+      local b_moved = (b_pt.x - orig_b.x)^2 + (b_pt.y - orig_b.y)^2 > 0.000001
+
+      if not a_moved and not b_moved then
+         -- Neither endpoint was modified: preserve original geometry (arc, bezier, line) perfectly
          new_contour:AppendSpan(CloneSpanGeometry(s))
       else
-         -- One or both endpoints were trimmed: this is a straight edge adjoining a corner
-         local start_pt = s.StartPoint2D
-         if prev_c.filleted then
-            if prev_c.type == 'dogbone' then
-               start_pt = prev_c.p_out
-            elseif prev_c.type == 'tbone' then
-               if prev_c.place_on == 'out' then
-                  start_pt = prev_c.p_cut
-               else
-                  start_pt = prev_c.vertex
-               end
-            end
-         end
-
-         local end_pt = s.EndPoint2D
-         if cur_c.filleted then
-            if cur_c.type == 'dogbone' then
-               end_pt = cur_c.p_in
-            elseif cur_c.type == 'tbone' then
-               if cur_c.place_on == 'in' then
-                  end_pt = cur_c.p_cut
-               else
-                  end_pt = cur_c.vertex
-               end
-            end
-         end
-
-         local dx = end_pt.x - start_pt.x
-         local dy = end_pt.y - start_pt.y
+         -- Edge adjoining a filleted corner
+         local dx = b_pt.x - a_pt.x
+         local dy = b_pt.y - a_pt.y
          if (dx * dx + dy * dy) > 0.000001 then
-            new_contour:AppendSpan(LineSpan(start_pt, end_pt))
+            new_contour:AppendSpan(LineSpan(a_pt, b_pt))
          end
       end
 
-      -- If corner k is filleted, append its fillet arc
-      if cur_c.filleted then
-         if cur_c.type == 'dogbone' then
-            new_contour:AppendSpan(ArcSpan(cur_c.p_in, cur_c.p_out, cur_c.bulge))
-         elseif cur_c.type == 'tbone' then
-            if cur_c.place_on == 'in' then
-               new_contour:AppendSpan(ArcSpan(cur_c.p_cut, cur_c.vertex, cur_c.bulge))
-            else
-               new_contour:AppendSpan(ArcSpan(cur_c.vertex, cur_c.p_cut, cur_c.bulge))
-            end
-         end
+      -- If corner k has a fillet arc, append it
+      local arc = fillet_arcs[k]
+      if arc ~= nil then
+         new_contour:AppendSpan(ArcSpan(arc.start_pt, arc.end_pt, arc.bulge))
       end
    end
 
@@ -1334,7 +1349,18 @@ function FilletSingleContour(contour, radius, fillet_type)
       end
    end
 
-   return new_contour, total_corners_filleted, corners
+   -- Build corners list for markers preview compatibility
+   local corners_ret = {}
+   for _, cinfo in pairs(corner_info_map) do
+      table.insert(corners_ret, {
+         filleted = true,
+         vertex = cinfo.vertex
+      })
+   end
+
+   WriteDebugLog("FilletSingleContour done: orig_n=" .. n .. ", filleted_corners=" .. total_corners_filleted .. ", new_n=" .. new_contour.Count .. ", IsClosed=" .. tostring(new_contour.IsClosed))
+
+   return new_contour, total_corners_filleted, corners_ret
 end
 
 function FindLayerForObject(job, cad_obj)
@@ -1409,7 +1435,7 @@ function GetTargetObjectsForFillet(job, scope, sheet_index)
       while layer_pos ~= nil do
          local layer = nil
          layer, layer_pos = layer_mgr:GetNext(layer_pos)
-         if layer ~= nil and not layer.IsSystemLayer and layer.Name ~= g_options.filletOutputLayer and layer.Name ~= "FilletMarkers" then
+         if layer ~= nil and not layer.IsSystemLayer and layer.Name ~= g_options.filletOutputLayer and layer.Name ~= "FilletMarkers" and layer.Name ~= "DogBoneMarkers" then
             local obj_pos = layer:GetHeadPosition()
             while obj_pos ~= nil do
                local obj = nil
