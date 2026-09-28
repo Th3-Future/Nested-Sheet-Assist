@@ -1338,8 +1338,15 @@ function FilletSingleContour(contour, radius, fillet_type)
 end
 
 function FindLayerForObject(job, cad_obj)
-   if job == nil or cad_obj == nil then return nil end
+   if job == nil or cad_obj == nil then return nil, cad_obj end
    local layer_mgr = job.LayerManager
+   local target_ctr = cad_obj:GetContour()
+   if target_ctr == nil then return layer_mgr:GetActiveLayer(), cad_obj end
+
+   local bb_target = target_ctr.BoundingBox2D
+   local target_count = target_ctr.Count
+   local p_start = target_ctr.StartPoint2D
+
    local layer_pos = layer_mgr:GetHeadPosition()
    while layer_pos ~= nil do
       local layer = nil
@@ -1349,35 +1356,17 @@ function FindLayerForObject(job, cad_obj)
          while obj_pos ~= nil do
             local obj = nil
             obj, obj_pos = layer:GetNext(obj_pos)
-            if obj == cad_obj then
-               return layer
-            end
-         end
-      end
-   end
-
-   -- Geometric fallback
-   local target_ctr = cad_obj:GetContour()
-   if target_ctr ~= nil then
-      local bb_target = target_ctr.BoundingBox2D
-      layer_pos = layer_mgr:GetHeadPosition()
-      while layer_pos ~= nil do
-         local layer = nil
-         layer, layer_pos = layer_mgr:GetNext(layer_pos)
-         if layer ~= nil and not layer.IsSystemLayer then
-            local obj_pos = layer:GetHeadPosition()
-            while obj_pos ~= nil do
-               local obj = nil
-               obj, obj_pos = layer:GetNext(obj_pos)
-               if obj ~= nil then
-                  local c = obj:GetContour()
-                  if c ~= nil and c.Count == target_ctr.Count then
-                     local bb = c.BoundingBox2D
-                     if math.abs(bb.MinX - bb_target.MinX) < 0.001 and
-                        math.abs(bb.MinY - bb_target.MinY) < 0.001 and
-                        math.abs(bb.MaxX - bb_target.MaxX) < 0.001 and
-                        math.abs(bb.MaxY - bb_target.MaxY) < 0.001 then
-                        return layer
+            if obj ~= nil then
+               local c = obj:GetContour()
+               if c ~= nil and c.Count == target_count then
+                  local bb = c.BoundingBox2D
+                  if math.abs(bb.MinX - bb_target.MinX) < 0.001 and
+                     math.abs(bb.MinY - bb_target.MinY) < 0.001 and
+                     math.abs(bb.MaxX - bb_target.MaxX) < 0.001 and
+                     math.abs(bb.MaxY - bb_target.MaxY) < 0.001 then
+                     local ps = c.StartPoint2D
+                     if math.abs(ps.x - p_start.x) < 0.001 and math.abs(ps.y - p_start.y) < 0.001 then
+                        return layer, obj
                      end
                   end
                end
@@ -1385,7 +1374,7 @@ function FindLayerForObject(job, cad_obj)
          end
       end
    end
-   return layer_mgr:GetActiveLayer()
+   return layer_mgr:GetActiveLayer(), cad_obj
 end
 
 function GetTargetObjectsForFillet(job, scope, sheet_index)
@@ -1403,9 +1392,9 @@ function GetTargetObjectsForFillet(job, scope, sheet_index)
          if cad_obj ~= nil then
             local ctr = cad_obj:GetContour()
             if ctr ~= nil and ctr.IsClosed then
-               local parent_layer = FindLayerForObject(job, cad_obj)
+               local parent_layer, layer_obj = FindLayerForObject(job, cad_obj)
                table.insert(targets, {
-                  cad_obj = cad_obj,
+                  cad_obj = layer_obj or cad_obj,
                   layer = parent_layer,
                   contour = ctr,
                   sheet_index = cad_obj.SheetIndex
