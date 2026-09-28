@@ -1099,9 +1099,8 @@ local function DetectCornersViaOffset(contour, radius)
       local cg = ContourGroup(true)
       cg:AddTail(contour:Clone())
 
-      local is_ccw = contour.IsCCW
-      local r_out = is_ccw and radius or -radius
-      local r_in  = is_ccw and -radius or radius
+      local r_out = radius
+      local r_in  = -radius
 
       local tol = math.min(radius * 0.1, 0.02)
       local out_group = cg:Offset(r_out, tol, 1, true)
@@ -1417,12 +1416,15 @@ function GetTargetObjectsForFillet(job, scope, sheet_index)
             local ctr = cad_obj:GetContour()
             if ctr ~= nil and ctr.IsClosed then
                local parent_layer, layer_obj = FindLayerForObject(job, cad_obj)
-               table.insert(targets, {
-                  cad_obj = layer_obj or cad_obj,
-                  layer = parent_layer,
-                  contour = ctr,
-                  sheet_index = cad_obj.SheetIndex
-               })
+               local layer_name = parent_layer and parent_layer.Name or ''
+               if layer_name ~= 'FilletMarkers' and layer_name ~= 'DogBoneMarkers' and layer_name ~= g_options.filletOutputLayer then
+                  table.insert(targets, {
+                     cad_obj = layer_obj or cad_obj,
+                     layer = parent_layer,
+                     contour = ctr,
+                     sheet_index = cad_obj.SheetIndex
+                  })
+               end
             end
          end
       end
