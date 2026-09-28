@@ -1021,6 +1021,22 @@ function OnLuaButton_ApplyAndSaveButton(dialog)
    return true
 end
 
+local function SetLayerRGB(layer, r, g, b)
+   if layer == nil then return end
+   local ok = pcall(function() layer:SetColor(r, g, b) end)
+   if ok then return end
+   ok = pcall(function() layer:SetColor(r / 255.0, g / 255.0, b / 255.0) end)
+   if ok then return end
+   ok = pcall(function() layer:SetColour(r, g, b) end)
+   if ok then return end
+   ok = pcall(function() layer:SetColour(r / 255.0, g / 255.0, b / 255.0) end)
+   if ok then return end
+   local rgb_int = r + (g * 256) + (b * 65536)
+   ok = pcall(function() layer.Color = rgb_int end)
+   if ok then return end
+   pcall(function() layer.Colour = rgb_int end)
+end
+
 local function ClearLayerObjects(layer)
    if layer == nil or layer.IsEmpty then return 0 end
    local to_remove = {}
@@ -1107,8 +1123,8 @@ end
 local function GetEndPointArcBisector(arc_span, radius, start_point, mid_point)
    local internal_angle = GetInternalAngleArc(arc_span, start_point)
    local corner_angle = math.pi - internal_angle
-   local sin_val = math.sin(0.5 * corner_angle)
-   if math.abs(sin_val) < 0.0001 then sin_val = 0.0001 end
+   local sin_val = math.abs(math.sin(0.5 * corner_angle))
+   if sin_val < 0.001 then sin_val = 0.001 end
    local dist_to_corner = radius / sin_val
    local dx = mid_point.x - start_point.x
    local dy = mid_point.y - start_point.y
@@ -1204,25 +1220,34 @@ function FilletSingleContour(contour, radius, fillet_type)
 
    for _, oc in ipairs(offset_corners) do
       local best_k = nil
-      local best_dist_sq = (radius * 0.8) * (radius * 0.8)
+      local best_dist_sq = (radius * 1.6) * (radius * 1.6)
       for i = 1, n do
-         local v = spans[i].EndPoint2D
-         local dsq = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
-         if dsq < best_dist_sq then
-            best_dist_sq = dsq
-            best_k = i
-         end
-      end
+         local s_in = spans[i]
+         local next_i = (i % n) + 1
+         local s_out = spans[next_i]
+         local v = s_in.EndPoint2D
 
-      -- If no match found near oc.corner, try matching near oc.centre as fallback
-      if best_k == nil then
-         local fallback_dist_sq = (radius * 1.6) * (radius * 1.6)
-         for i = 1, n do
-            local v = spans[i].EndPoint2D
-            local dsq = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
-            if dsq < fallback_dist_sq then
-               fallback_dist_sq = dsq
-               best_k = i
+         local dx_in = v.x - s_in.StartPoint2D.x
+         local dy_in = v.y - s_in.StartPoint2D.y
+         local len_in = math.sqrt(dx_in * dx_in + dy_in * dy_in)
+         local dx_out = s_out.EndPoint2D.x - v.x
+         local dy_out = s_out.EndPoint2D.y - v.y
+         local len_out = math.sqrt(dx_out * dx_out + dy_out * dy_out)
+
+         if len_in > 0.0001 and len_out > 0.0001 then
+            local t_in = { x = dx_in / len_in, y = dy_in / len_in }
+            local t_out = { x = dx_out / len_out, y = dy_out / len_out }
+            local dot = t_in.x * t_out.x + t_in.y * t_out.y
+
+            -- Must be a real sharp turn (not a flat edge or collinear subdivision)
+            if math.abs(dot) < 0.85 then
+               local dsq_corner = (v.x - oc.corner.x)^2 + (v.y - oc.corner.y)^2
+               local dsq_centre = (v.x - oc.centre.x)^2 + (v.y - oc.centre.y)^2
+               local dsq = math.min(dsq_corner, dsq_centre)
+               if dsq < best_dist_sq then
+                  best_dist_sq = dsq
+                  best_k = i
+               end
             end
          end
       end
@@ -1231,7 +1256,6 @@ function FilletSingleContour(contour, radius, fillet_type)
          local s_in = spans[best_k]
          local next_k = (best_k % n) + 1
          local s_out = spans[next_k]
-
          local v = s_in.EndPoint2D
 
          local dx_in = v.x - s_in.StartPoint2D.x
@@ -1246,20 +1270,16 @@ function FilletSingleContour(contour, radius, fillet_type)
          if len_out < 0.0001 then len_out = 0.0001 end
          local t_out = { x = dx_out / len_out, y = dy_out / len_out }
 
-         local dot = t_in.x * t_out.x + t_in.y * t_out.y
-         -- Ensure this vertex is an actual sharp turn (not a flat subdivided line segment)
-         if math.abs(dot) < 0.85 then
-            corner_info_map[best_k] = {
-               k = best_k,
-               next_k = next_k,
-               vertex = v,
-               t_in = t_in,
-               t_out = t_out,
-               len_in = len_in,
-               len_out = len_out
-            }
-            total_corners_filleted = total_corners_filleted + 1
-         end
+         corner_info_map[best_k] = {
+            k = best_k,
+            next_k = next_k,
+            vertex = v,
+            t_in = t_in,
+            t_out = t_out,
+            len_in = len_in,
+            len_out = len_out
+         }
+         total_corners_filleted = total_corners_filleted + 1
       end
    end
 
@@ -1297,8 +1317,7 @@ function FilletSingleContour(contour, radius, fillet_type)
             else
                cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
             end
-         end
-         if place_on == 'out' then
+         elseif place_on == 'out' then
             if cut_dist > cinfo.len_out * 0.9 and cinfo.len_in > cinfo.len_out then
                place_on = 'in'
                cut_dist = math.min(cut_dist, cinfo.len_in * 0.9)
@@ -1404,6 +1423,8 @@ function FilletSingleContour(contour, radius, fillet_type)
       -- If corner k has a fillet arc, append it
       local arc = fillet_arcs[k]
       if arc ~= nil then
+         WriteDebugLog(string.format('FILLET ARC k=%d: start=(%.4f, %.4f), end=(%.4f, %.4f), bulge=%.4f',
+            k, arc.start_pt.x, arc.start_pt.y, arc.end_pt.x, arc.end_pt.y, arc.bulge))
          new_contour:ArcTo(arc.end_pt, arc.bulge)
       end
    end
@@ -1645,6 +1666,7 @@ function OnLuaButton_ApplyFilletButton(dialog)
             else
                local out_layer = job.LayerManager:GetLayerWithName(g_options.filletOutputLayer)
                out_layer.Visible = true
+               SetLayerRGB(out_layer, 220, 20, 60) -- Distinct Crimson/Red for FilletedContours
                local add_ok = out_layer:AddObject(new_cad, true)
                WriteDebugLog('Item ' .. idx .. ': added to ' .. out_layer.Name .. ' add=' .. tostring(add_ok) .. ', layer.Count=' .. tostring(out_layer.Count))
             end
@@ -1770,7 +1792,9 @@ function OnLuaButton_CreateFilletMarkersButton(dialog)
       return true
    end
 
-   local marker_layer_obj = job.LayerManager:FindLayerWithName(marker_layer)
+   local marker_layer_obj = job.LayerManager:GetLayerWithName(marker_layer)
+   marker_layer_obj.Visible = true
+   SetLayerRGB(marker_layer_obj, 0, 160, 255) -- Distinct Blue/Cyan for preview markers
    if marker_layer_obj ~= nil and not marker_layer_obj.IsEmpty then
       local removed = ClearLayerObjects(marker_layer_obj)
       WriteDebugLog('Cleared ' .. removed .. ' existing preview markers from \'' .. marker_layer .. '\'')
