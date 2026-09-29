@@ -1049,6 +1049,8 @@ end
 local function GetStraightWallLength(spans, n, v0, start_k, step)
    local path_len = 0.0
    local k = start_k
+   local wall_tx = nil
+   local wall_ty = nil
 
    for step_count = 1, n do
       local s = spans[k]
@@ -1064,14 +1066,18 @@ local function GetStraightWallLength(spans, n, v0, start_k, step)
          local disp_y = seg_end.y - v0.y
          local disp_len = math.sqrt(disp_x * disp_x + disp_y * disp_y)
 
-         if disp_len > 0.02 then
-            local tx_w = disp_x / disp_len
-            local ty_w = disp_y / disp_len
+         -- Lock the wall direction once we are 0.02" away from the corner
+         if wall_tx == nil and disp_len > 0.02 then
+            wall_tx = disp_x / disp_len
+            wall_ty = disp_y / disp_len
+         end
+
+         if wall_tx ~= nil then
             local tx_s = dx / slen
             local ty_s = dy / slen
-            local dot = tx_w * tx_s + ty_w * ty_s
-            -- When angle deviates by more than ~45 degrees, the straight wall has ended!
-            if dot < 0.70 then
+            local dot = wall_tx * tx_s + wall_ty * ty_s
+            -- When angle deviates by more than ~30 degrees from the established wall, the straight wall has ended!
+            if dot < 0.85 then
                break
             end
          end
